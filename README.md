@@ -1,5 +1,5 @@
 # Dungeoneer
-Procedurally generated dungeons
+Procedurally Generated Dungeons
 
 I'm honestly just building this for fun, because procedural generation fascinates me, and because I can. It may turn into a game if it goes far enough.
 
