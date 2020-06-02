@@ -731,8 +731,16 @@ class Dungeon:
         if report: print(self.report() + "   ", end="\r")
 
     @staticmethod
-    def new(recipe="default", report=True):
-        return Dungeon(**Dungeon.RECIPES[recipe], report=report)
+    def new(recipe="default", **kwargs):
+        # NOTE: Common kwargs to add: report, seed, highlight_borders, w, h, d.
+        #   But, you can also replace recipe params.
+
+        # In case the user wants to overwrite recipe params, not just add to them, this lets them do it:
+        use_recipe = Dungeon.RECIPES[recipe]
+        for key in kwargs:
+            use_recipe[key] = kwargs[key]
+            
+        return Dungeon(**use_recipe)
 
     RECIPES = {
         "default" : {}, # TODO: Somewhere between medium and hard?
