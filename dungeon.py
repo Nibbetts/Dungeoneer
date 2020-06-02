@@ -5,6 +5,8 @@ from time import time
 from abc import ABC, abstractstaticmethod
 # NOTE: randint is inclusive on both ends
 
+from stories import COUNT as STORY_COUNT
+
 
 
 # Enumerations
@@ -51,7 +53,7 @@ GRID       = "─┼"
 class Place(ABC):
     """ This is an abstract base class for Rooms and Hallways,
         describing their similarities."""
-    def __init__(self, pid, x, y, z, w, h, door_in, parent, children=[], contents=[], boss=False, room=False):
+    def __init__(self, pid, x, y, z, w, h, door_in, parent, children=[], loops=[], contents=[], boss=False, room=False):
         self.pid = pid
         self.x = x
         self.y = y
@@ -61,6 +63,7 @@ class Place(ABC):
         self.door_in = door_in # Coordinate tuple; may be of a stair
         self.parent = parent # May be None if root
         self.children = children # List of descendent Places (those with doors leading off of this one)
+        self.loops = loops # List of tuples (x, y, z, Place)
         self.area = (w-2) * (h-2) # Internal area
         self.perimeter_area = 2*w + 2*h - 4
         self.boss = boss # Whether or not I am a boss area
@@ -74,7 +77,7 @@ class Place(ABC):
 
 
 class Room(Place):
-    def __init__(self, pid, x, y, z, w, h, door_in, parent, children=[], contents=[], boss=False):
+    def __init__(self, pid, x, y, z, w, h, door_in, parent, children=[], loops=[], contents=[], boss=False):
         super().__init__(pid, x, y, z, w, h, door_in, parent, children=children, contents=contents, boss=boss, room=True)
 
     @staticmethod
@@ -140,7 +143,7 @@ class Room(Place):
 
 
 class Hallway(Place):
-    def __init__(self, pid, x, y, z, orientation, length, breadth, door_in, parent, children=[], contents=[]):
+    def __init__(self, pid, x, y, z, orientation, length, breadth, door_in, parent, children=[], loops=[], contents=[]):
         super().__init__(pid, x, y, z,
             length if orientation == LR else breadth,
             length if orientation == UD else breadth,
@@ -287,6 +290,7 @@ class Dungeon:
         # # OTHER MEMBER VARIABLES, set upon map generation:
         # self.map               # Array of ints indicating block types on the map,
                                  #   corresponding to char ords in many cases
+        # self.story             # The index of the storyline used for this seed
         # self.root              # The starting Room or Hall
         # self.halls             # List of Hallways,             in creation order
         # self.rooms             # List of Rooms,                in creation order
@@ -430,7 +434,7 @@ class Dungeon:
 
         return L, R, U, D, met_bound
 
-    def write(self, place, write_doors_out=False):
+    def write(self, place, write_doors_out=False, write_loops=True):
         # Write spaces inside border
         for x in range(place.x + 1, place.x + place.w - 1):
             for y in range(place.y + 1, place.y + place.h - 1):
@@ -441,6 +445,10 @@ class Dungeon:
         if write_doors_out:
             for child in place.children:
                 self.map[child.door_in[::-1]] = DOOR
+        if write_loops:
+            for loop in place.loops:
+                self.map[loop[2], loop[1], loop[0]] = LOOP
+
 
     def borders(self, place, borders=None):
         if not borders:
@@ -493,6 +501,7 @@ class Dungeon:
         # RESET VARIABLES
         self.seed               = int(round(time() * 1e7)) if seed is None else seed
         seedrandom(self.seed)   # Seed the random number generator
+        self.story              = choice(range(STORY_COUNT))
         self.map                = (np.ones((self.d, self.h, self.w), dtype='<u2') * SOLID)
         self.halls              = [] # All Hallways, in creation order
         self.rooms              = [] # All Rooms, in creation order
@@ -695,13 +704,13 @@ class Dungeon:
         # Move backward through the halls to clean up loose ends
         for h in self.halls[::-1]:
             if random() < self.layer_params[h.z][PARAM_ORDERLINESS]:
-                if not len(h.children) and not len(h.contents):
+                if not len(h.children) and not len(h.contents) and not len(h.loops):
                     pass
-            elif h.orientation == UD:
-                pass
-            elif h.orientation == LR:
-                pass
-            # TODO: add param to allow doors in halls, then clean up depending on orderliness?
+                elif h.orientation == UD:
+                    pass
+                elif h.orientation == LR:
+                    pass
+                # TODO: add param to allow doors in halls, then clean up depending on orderliness?
 
         # Change room borders
         if self.HIGHLIGHT_BORDERS:
