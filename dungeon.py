@@ -53,23 +53,23 @@ GRID       = "─┼"
 class Place(ABC):
     """ This is an abstract base class for Rooms and Hallways,
         describing their similarities."""
-    def __init__(self, pid, x, y, z, w, h, door_in, parent, children=[], loops=[], contents=[], boss=False, room=False):
+    def __init__(self, pid, x, y, z, w, h, door_in, parent, children=None, loops=None, contents=None, boss=False, room=False):
         self.pid = pid
         self.x = x
         self.y = y
         self.z = z
         self.w = w
         self.h = h
-        self.door_in = door_in # Coordinate tuple; may be of a stair
+        self.door_in = door_in # Coordinate tuple; may be of a stair. Of the form: (z, y, x)
         self.parent = parent # May be None if root
-        self.children = children # List of descendent Places (those with doors leading off of this one)
-        self.loops = loops # List of tuples (x, y, z, Place)
+        self.children = children if children else [] # List of descendent Places (those with doors leading off of this one)
+        self.loops = loops if loops else [] # List of tuples ((z, y, x), Place)
         self.area = (w-2) * (h-2) # Internal area
         self.perimeter_area = 2*w + 2*h - 4
         self.boss = boss # Whether or not I am a boss area
         self.room = room # Whether or not I am a room
-        self.contents = contents # List of Items or Entities contained in the room (not doors or stairs),
-        #   each entry of the form (x, y, id). Type is retrieved from the map.
+        self.contents = contents if contents else [] # List of Items or Entities contained in the room (not doors or stairs),
+        #   each entry of the form ((z, y, x), id). Type of object is to be retrieved from the map.
 
     @abstractstaticmethod
     def place(dungeon, pid, x, y, z, parent, stair=False, allow_shrink=True):
@@ -77,7 +77,7 @@ class Place(ABC):
 
 
 class Room(Place):
-    def __init__(self, pid, x, y, z, w, h, door_in, parent, children=[], loops=[], contents=[], boss=False):
+    def __init__(self, pid, x, y, z, w, h, door_in, parent, children=None, loops=None, contents=None, boss=False):
         super().__init__(pid, x, y, z, w, h, door_in, parent, children=children, contents=contents, boss=boss, room=True)
 
     @staticmethod
@@ -136,14 +136,14 @@ class Room(Place):
         # Make the Room
         corner_x = x - L
         corner_y = y - U
-        room = Room(pid, corner_x, corner_y, z, w, h, door_in=(x, y, z), parent=parent, boss=boss) # TODO: fix the None here! Move room creation out of place function.
+        room = Room(pid, corner_x, corner_y, z, w, h, door_in=(z, y, x), parent=parent, boss=boss) # TODO: fix the None here! Move room creation out of place function.
         if parent: parent.children.append(room)
         else: dungeon.root = room
         return room
 
 
 class Hallway(Place):
-    def __init__(self, pid, x, y, z, orientation, length, breadth, door_in, parent, children=[], loops=[], contents=[]):
+    def __init__(self, pid, x, y, z, orientation, length, breadth, door_in, parent, children=None, loops=None, contents=None):
         super().__init__(pid, x, y, z,
             length if orientation == LR else breadth,
             length if orientation == UD else breadth,
@@ -193,7 +193,7 @@ class Hallway(Place):
         # Make the Room
         corner_x = x - L
         corner_y = y - U
-        hall = Hallway(pid, corner_x, corner_y, z, orientation, length, dungeon.HALL_BREADTH, door_in=(x, y, z), parent=parent)
+        hall = Hallway(pid, corner_x, corner_y, z, orientation, length, dungeon.HALL_BREADTH, door_in=(z, y, x), parent=parent)
         if parent: parent.children.append(hall)
         else: dungeon.root = hall
         return hall
@@ -261,7 +261,7 @@ class Dungeon:
         self.MAX_BACKTRACK      = max_backtrack      # How many rooms/halls back we might branch anew. This is not a direct control, but largely influences branching and the likelihood of long independent branches.
         self.MAX_KEY_BACKTRACK  = max_key_backtrack  # How many rooms (only) back we might place a key from it's door
         self.MAX_DENSITY        = max_density        # May not be met, but stops after this density. # TODO: use this and min as well!
-        self.MIN_DENSITY        = min_density        # May not be met, especially with low backtracking.
+        self.MIN_DENSITY        = min_density        # May not be met, especially with low backtracking or low fail limits or high down stair ratio
         self.VARY_ROOM_RATIO    = vary_room_ratio    # Use a varied trimodal distribution for room/hall ratios (Turn off to get all layers to match ratios)
 
         # Global Characteristics that may be locally modified
@@ -295,7 +295,6 @@ class Dungeon:
         # self.halls             # List of Hallways,             in creation order
         # self.rooms             # List of Rooms,                in creation order
         # self.places            # Rooms and Halls together,     in creation order
-        # self.branching_weights # Branching Weights of places,  in creation order
         # self.layer_places      # Rooms + Halls in each layer,  in creation order
         # self.layer_areas       # Approximate used 2D area of each layer
         # self.doors             # List of Doors,                in creation order
@@ -306,6 +305,7 @@ class Dungeon:
         # self.layer_params      # List of layer parameter lists, in depth order
         # self.layer_bosses      # List of lists of boss rooms in each layer
         # self.layer_fails       # Array of per-layer fail counts
+        # self.dead_ends         # Count of dead-end hallways
         # self.seed              # The seed used to generate this dungeon given these parameters
         # self.time              # How long it took to generate, in seconds
 
@@ -434,23 +434,40 @@ class Dungeon:
 
         return L, R, U, D, met_bound
 
-    def write(self, place, write_doors_out=False, write_loops=True):
-        # Write spaces inside border
-        for x in range(place.x + 1, place.x + place.w - 1):
-            for y in range(place.y + 1, place.y + place.h - 1):
-                self.map[place.z, y, x] = SPACE
+    def write(self, place, write_space=False, write_door_in=False, write_loops=False, erase=False):
+        if write_space:
+            # Write room spaces inside its border
+            for x in range(place.x + 1, place.x + place.w - 1):
+                for y in range(place.y + 1, place.y + place.h - 1):
+                    self.map[place.z, y, x] = SOLID if erase else SPACE
 
-        # Write doors (non-specific, here)
-        self.map[place.door_in[2], place.door_in[1], place.door_in[0]] = DOOR
-        if write_doors_out:
-            for child in place.children:
-                self.map[child.door_in[::-1]] = DOOR
+        if write_door_in:
+            # Write entryway not occurring on this level
+            if place.parent and place.parent.z != place.z:
+                symbol = SPACE if erase \
+                    else STAIR_UP if place.parent.z > place.z \
+                    else STAIR_DOWN
+                self.map[place.parent.z, place.door_in[1], place.door_in[2]] = symbol
+            # Write entryway occurring on this level
+            symbol = SOLID if erase \
+                else STAIR_UP if (place.parent is None) or (place.parent.z < place.z) \
+                else STAIR_DOWN if place.parent.z > place.z \
+                else LOCK if place.door_in in self.locks \
+                else DOOR
+            self.map[place.door_in] = symbol
+        
         if write_loops:
             for loop in place.loops:
-                self.map[loop[2], loop[1], loop[0]] = LOOP
+                self.map[loop[0]] = SOLID if erase else LOOP
 
+        # if write_doors_out:
+        #     for child in place.children:
+        #         symbol = SOLID if erase else DOOR if place.z == child.z else STAIR_DOWN if place.z > child.z else STAIR_UP
+        #         self.map[child.door_in] = symbol
+            
 
     def borders(self, place, borders=None):
+        # NOTE: uses (x, y) tuples instead of (z, y, x)
         if not borders:
             borders = []
 
@@ -471,7 +488,8 @@ class Dungeon:
         
         # Remove doors and spaces next to them
         for d in [c.door_in for c in place.children] + [place.door_in]:
-            L, R, U, D = (d[0]-1, d[1]), (d[0]+1, d[1]), (d[0], d[1]-1), (d[0], d[1]+1)
+            _, y, x = d
+            L, R, U, D = (x-1, y), (x+1, y), (x, y-1), (x, y+1)
             for loc in [d, L, R, U, D]:
                 if loc in borders: borders.remove(loc)
 
@@ -483,7 +501,9 @@ class Dungeon:
             +  f"     Rooms: {len(self.rooms)}\n" \
             +  f"     Halls: {len(self.halls)}\n" \
             +  f"     Doors: {len(self.doors)}\n" \
+            +  f"     Locks: {len(self.locks)}\n" \
             +  f"    Stairs: {len(self.stairs_up)}\n" \
+            +  f" Dead Ends: {self.dead_ends}\n" \
             +  f"     Fails: {self.fails}\n" \
             +  f" MaxConsec: {self.max_consec}\n" \
             +  f"      Time: {self.time}\n" \
@@ -506,7 +526,6 @@ class Dungeon:
         self.halls              = [] # All Hallways, in creation order
         self.rooms              = [] # All Rooms, in creation order
         self.places             = [] # Rooms and Halls together, in creation order
-        self.branching_weights  = [] # Branching weight for each place in places
         self.layer_places       = [[] for _ in range(self.d)]
         self.layer_areas        = np.zeros(self.d)
         self.doors              = []
@@ -517,8 +536,7 @@ class Dungeon:
         self.layer_params       = [[0, 0, 0, 0, 0, False, 0] for _ in range(self.d)]
         self.layer_bosses       = [[] for _ in range(self.d)]
         self.root               = None
-
-        orderly_hall_start      = round(2 * self.w * self.h / self.MAX_HALL**2)
+        self.dead_ends          = 0
 
         # Failsafe setup
         self.fails              = 0
@@ -541,6 +559,10 @@ class Dungeon:
         def reset_consec_fails(layer):
             self.consec_fails = 0
             self.layer_consec_fails[layer] = 0
+
+        # Non-member variables
+        orderly_hall_start      = round(2 * self.w * self.h / self.MAX_HALL**2)
+        branching_weights       = [] # Branching weight for each place in places. Correct up until we start removing hallways after completing the main while loop
 
         # INDIVIDUAL LAYER PARAMETER CALCULATIONS
         # Do some precalculations
@@ -575,7 +597,7 @@ class Dungeon:
             self.layer_params[l][PARAM_ORDERLINESS      ] = uniform(self.TOP_ORDERLINESS, self.BOTTOM_ORDERLINESS) if orderliness is None else orderliness[l] 
 
 
-        # DUNGEON GENERATION LOOP
+        # DUNGEON PLACES GENERATION LOOP
         # Iterate down the dungeon
         # TODO: fix end conditions to work with density instead, keep track of local density, and local fails, and layers/places that haven't failed out?
         # Stop only once the bottom layers fill up enough
@@ -586,7 +608,7 @@ class Dungeon:
             # Find a Room or Hall to focus on
             # place = self.places[-randint(1, min(len(self.places), self.MAX_BACKTRACK+1))] if self.places else None
             backtrack = min(len(self.places), self.MAX_BACKTRACK+1)
-            place = choices(self.places[-backtrack:], weights=self.branching_weights[-backtrack:])[0] if self.places else None
+            place = choices(self.places[-backtrack:], weights=branching_weights[-backtrack:])[0] if self.places else None
 
             # Decide whether to build down or adjacent.
             if not place:
@@ -597,7 +619,7 @@ class Dungeon:
                 # Up
                 z = place.z - 1
                 x, y = randint(place.x+1, place.x+place.w-2), randint(place.y+1, place.y+place.h-2)
-                stair = -1
+                stair = -1 # Also counts as true
             elif (self.consec_fails > self.CONSEC_FAILS/2 or random() < self.layer_params[place.z][PARAM_DOWN_STAIR_RATIO]) and place.z != self.d-1: # TODO: check if shouldn't be based on consec_fails
                 # Down
                 z = place.z + 1
@@ -613,7 +635,7 @@ class Dungeon:
                         (place.x, place.y+place.h-2), (place.x+1, place.y+place.h-1),
                         (place.x+place.w-2, place.y+place.h-1), (place.x+place.w-1, place.y+place.h-2)]) # Priority borders on halls are at the ends
                 else: borders = self.borders(place)
-                if not borders: # Empty borders list should be rare, if even possible
+                if not borders: # Empty borders list should be very rare, but possible
                     increment_fails(z)
                     continue
                 x, y = choice(borders)
@@ -645,53 +667,22 @@ class Dungeon:
                     new_place = Hallway.place(self, pid, x, y, z, place, stair=stair, allow_shrink=allow_shrink)
                 room = False
 
-            # Make the necessary additions to the map and to our lists
+            # Make the necessary additions to our lists
             if new_place:
                 # We succeeded in building the room or Hall
                 reset_consec_fails(z)
-                self.write(new_place)
+                self.write(new_place, write_space=True)
                 self.places.append(new_place)
                 if room: # TODO: make these numbers into parameters
                     self.rooms.append(new_place)
-                    if boss: self.branching_weights.append(10)#15 if random() < .5 else 1)
-                    else:    self.branching_weights.append(1)
+                    if boss: branching_weights.append(10)#15 if random() < .5 else 1)
+                    else:    branching_weights.append(1)
                 else:
                     self.halls.append(new_place)
-                    self.branching_weights.append(1.5) # TODO: and here!
+                    branching_weights.append(1.5) # TODO: and here!
                 self.layer_places[z].append(new_place)
                 self.layer_areas[z] += Dungeon.area_of(new_place)
                 if new_place.boss: self.layer_bosses[z].append(new_place)
-                if stair == 1:
-                    # Stair down
-                    self.stairs_down.append((x, y, z-1))
-                    self.stairs_up.append((x, y, z))
-                    # Places don't draw stairs by themselves
-                    if place: self.map[z-1, y, x] = STAIR_DOWN if self.map[z-1, y, x] != STAIR_UP else STAIR_BOTH
-                    self.map[z, y, x] = STAIR_UP if self.map[z, y, x] != STAIR_DOWN else STAIR_BOTH
-                elif stair == -1:
-                    # Stair up
-                    self.stairs_up.append((x, y, z+1))
-                    self.stairs_down.append((x, y, z))
-                    # Places don't draw stairs by themselves
-                    self.map[z, y, x] = STAIR_DOWN if self.map[z, y, x] != STAIR_UP else STAIR_BOTH
-                    self.map[z+1, y, x] = STAIR_UP if self.map[z+1, y, x] != STAIR_DOWN else STAIR_BOTH
-                else:
-                    # Adjacent
-                    self.doors.append((x, y, z))
-                    # Decide whether to lock this one
-                    if random() < self.layer_params[z][PARAM_LOCKED_RATIO] and (len(self.rooms) > room):
-                        key_room = choice(self.rooms[-self.MAX_KEY_BACKTRACK-2:-1] if room else self.rooms[-self.MAX_KEY_BACKTRACK-1:])
-                        key_coords = (key_room.z, randint(key_room.y+1, key_room.y+key_room.h-2), randint(key_room.x+1, key_room.x+key_room.w-2))
-                        if self.map[key_coords] == SPACE:
-                            # If many very small rooms and/or many stairs, ratio of locked doors will go down.
-                            key_id = len(self.keys)
-                            key_room.contents.append((x, y, key_id))
-                            self.locks[(z,y,x)] = key_id
-                            self.keys[key_coords] = key_id
-                            # Places draw doors when placed, but not locked doors or keys
-                            self.map[z, y, x] = LOCK
-                            self.map[key_coords] = KEY
-            
             else:
                 # We failed to build the room
                 increment_fails(z)
@@ -702,15 +693,74 @@ class Dungeon:
             self.layer_params[l][PARAM_BOSS_ROOM] = bool(self.layer_bosses[l])
 
         # Move backward through the halls to clean up loose ends
-        for h in self.halls[::-1]:
-            if random() < self.layer_params[h.z][PARAM_ORDERLINESS]:
-                if not len(h.children) and not len(h.contents) and not len(h.loops):
-                    pass
+        for i, h in enumerate(self.halls[::-1]):
+            # TODO: add param to allow doors in halls, then clean up depending on orderliness?
+            if random() < self.layer_params[h.z][PARAM_ORDERLINESS]: # Orderliness Modifier
+                if not h.children and not h.contents and not h.loops:
+                    # Dead end hall we're going to remove
+                    self.write(h, write_space=True, erase=True)
+                    self.halls[len(self.halls)-i-1] = None
+                    self.places[h.pid] = None
+                    self.layer_places[h.z].remove(h)
+                    self.layer_areas[h.z] -= Dungeon.area_of(h)
+                    h.parent.children.remove(h)
+                    if h is self.root: self.root = None # Edge case
+                    del(h)
                 elif h.orientation == UD:
                     pass
+                    # TODO: update size!
                 elif h.orientation == LR:
                     pass
-                # TODO: add param to allow doors in halls, then clean up depending on orderliness?
+            elif not len(h.children) and not len(h.loops):
+                self.dead_ends += 1
+        # Filter the lists to update the changes
+        f = (lambda x: x is not None)
+        self.halls  = list(filter(f, self.halls ))
+        self.places = list(filter(f, self.places))
+        for i, p in enumerate(self.places): p.pid = i # Update the PID's
+
+        # DRAW DOORS, GENERATE LOCKS AND LOOPS
+        room_index = -1
+        for p in self.places:
+            if p.room: room_index += 1
+            stair = 1 if (not p.parent) or (p.parent.z < p.z) else 0 if p.z == p.parent.z else -1
+            z, y, x = p.door_in
+            if stair == 1:
+                # Stair down
+                self.stairs_down.append((z-1, y, x))
+                self.stairs_up.append((z, y, x))
+                # Places don't draw stairs by themselves
+                if p.parent: self.map[z-1, y, x] = STAIR_DOWN if self.map[z-1, y, x] != STAIR_UP else STAIR_BOTH
+                self.map[z, y, x] = STAIR_UP if self.map[z, y, x] != STAIR_DOWN else STAIR_BOTH
+            elif stair == -1:
+                # Stair up
+                self.stairs_up.append((z+1, y, x))
+                self.stairs_down.append((z, y, x))
+                # Places don't draw stairs by themselves
+                self.map[z, y, x] = STAIR_DOWN if self.map[z, y, x] != STAIR_UP else STAIR_BOTH
+                self.map[z+1, y, x] = STAIR_UP if self.map[z+1, y, x] != STAIR_DOWN else STAIR_BOTH
+            else:
+                # Adjacent
+                self.doors.append((z, y, x))
+                # Decide whether to lock this one
+                if random() < self.layer_params[z][PARAM_LOCKED_RATIO] and (room_index+1 > p.room):
+                    # key_room = choice(self.rooms[-self.MAX_KEY_BACKTRACK-2:-1] if p.room else self.rooms[-self.MAX_KEY_BACKTRACK-1:])
+                    key_room = choice(self.rooms[max(0, room_index-self.MAX_KEY_BACKTRACK-p.room) : room_index-p.room+1])
+                    key_coords = (key_room.z, randint(key_room.y+1, key_room.y+key_room.h-2), randint(key_room.x+1, key_room.x+key_room.w-2))
+                    if self.map[key_coords] == SPACE:
+                        # If many very small rooms and/or many stairs, ratio of locked doors will go down.
+                        key_id = len(self.keys)
+                        key_room.contents.append(((z, y, x), key_id))
+                        self.locks[(z,y,x)] = key_id
+                        self.keys[key_coords] = key_id
+                        # Places draw doors when placed, but not locked doors or keys
+                        # self.map[z, y, x] = LOCK
+                        self.map[key_coords] = KEY
+            # TODO: In making loops add to BOTH rooms?
+            self.write(p, write_space=False, write_door_in=True, write_loops=True)
+
+        # GENERATE MONSTERS, BOSSES, TREASURES, MAPS
+        # TODO:
 
         # Change room borders
         if self.HIGHLIGHT_BORDERS:
@@ -739,7 +789,7 @@ class Dungeon:
         use_recipe = Dungeon.RECIPES[recipe]
         for key in kwargs:
             use_recipe[key] = kwargs[key]
-            
+
         return Dungeon(**use_recipe)
 
     RECIPES = {
