@@ -165,7 +165,7 @@ class Hallway(Place):
         L, R, U, D, met_bound = result
         w = L + R + 1
         h = U + D + 1
-        length, width = (w, h) if orientation == LR else (h, w)
+        length, width = (w, h) if orientation == LR else (h, w) if orientation == UD else (dungeon.HALL_BREADTH, dungeon.HALL_BREADTH)
 
         # Make sure it works here, and catch literal edge cases
         if (length < dungeon.MIN_HALL) or (width < dungeon.HALL_BREADTH): return None
@@ -277,7 +277,7 @@ class Dungeon:
         self.BOTTOM_ORDERLINESS = bottom_orderliness # Minimum orderliness, or orderliness at the bottom of the dungeon if FADE_ORDERLINESS.
         self.FADE_ORDERLINESS   = fade_orderliness   # If True, order will change in a gradient from top to bottom of dungeon. If false, will pick a random value between top and bottom for each layer.
         self.ALLOW_DEAD_ENDS    = allow_dead_ends    # If True, none are removed; if False, all are removed; if None, follows orderliness based probability.
-        self.TRUNCATE_HALLS     = truncate_halls     # If True, all are shortened; if False, none are; if None, follows orderliness based probability.
+        self.TRUNCATE_HALLS     = truncate_halls     # If True, all are shortened; if False, none are; if None, follows orderliness based probability. NOTE: Truncating halls can result in halls shorter than min_hall
 
         # Procedural Generation Boundaries           # NOTE: fail count limits tend to affect how filled in a dungeon is when generation finishes.
         self.CONSEC_FAILS       = consec_fails       # Typical limit on consecutive location placement fails for some aspects of dungeon generation
@@ -310,7 +310,7 @@ class Dungeon:
         # self.layer_fails       # Array of per-layer fail counts
         # self.dead_ends         # Count of dead-end hallways not removed
         # self.dead_ends_removed # Count of dead-end hallways removed
-        # self.halls_shortened   # Count of hallways shortened
+        # self.halls_truncated   # Count of hallways shortened
         # self.seed              # The seed used to generate this dungeon given these parameters
         # self.time              # How long it took to generate, in seconds
 
@@ -439,12 +439,13 @@ class Dungeon:
 
         return L, R, U, D, met_bound
 
-    def write(self, place, write_space=False, write_door_in=False, write_loops=False, erase=False):
+    def write(self, place, write_space=False, write_door_in=False, write_loops=False, erase=False, only_overwrite_symbol=None):
         if write_space:
             # Write room spaces inside its border
             for x in range(place.x + 1, place.x + place.w - 1):
                 for y in range(place.y + 1, place.y + place.h - 1):
-                    self.map[place.z, y, x] = SOLID if erase else SPACE
+                    if only_overwrite_symbol is None or self.map[place.z, y, x] == only_overwrite_symbol:
+                        self.map[place.z, y, x] = SOLID if erase else SPACE
 
         if write_door_in:
             # Write entryway not occurring on this level
@@ -452,23 +453,28 @@ class Dungeon:
                 symbol = SPACE if erase \
                     else STAIR_UP if place.parent.z > place.z \
                     else STAIR_DOWN
-                self.map[place.parent.z, place.door_in[1], place.door_in[2]] = symbol
+                coords = place.parent.z, place.door_in[1], place.door_in[2]
+                if only_overwrite_symbol is None or self.map[coords] == only_overwrite_symbol:
+                    self.map[coords] = symbol
             # Write entryway occurring on this level
             symbol = SOLID if erase \
                 else STAIR_UP if (place.parent is None) or (place.parent.z < place.z) \
                 else STAIR_DOWN if place.parent.z > place.z \
                 else LOCK if place.door_in in self.locks \
                 else DOOR
-            self.map[place.door_in] = symbol
+            if only_overwrite_symbol is None or self.map[place.door_in] == only_overwrite_symbol:
+                self.map[place.door_in] = symbol
         
         if write_loops:
             for loop in place.loops:
-                self.map[loop[0]] = SOLID if erase else LOOP
+                if only_overwrite_symbol is None or self.map[loop[0]] == only_overwrite_symbol:
+                    self.map[loop[0]] = SOLID if erase else LOOP
 
-        # if write_doors_out:
+        # if write_doors_out: # NOTE: INCOMPLETE! If use, must add stair writing on both levels!
         #     for child in place.children:
         #         symbol = SOLID if erase else DOOR if place.z == child.z else STAIR_DOWN if place.z > child.z else STAIR_UP
-        #         self.map[child.door_in] = symbol
+        #         if only_overwrite_symbol is None or self.map[child.door_in] == only_overwrite_symbol:
+        #             self.map[child.door_in] = symbol
             
 
     def borders(self, place, borders=None):
@@ -509,6 +515,8 @@ class Dungeon:
             +  f"     Locks: {len(self.locks)}\n" \
             +  f"    Stairs: {len(self.stairs_up)}\n" \
             +  f" Dead Ends: {self.dead_ends}\n" \
+            +  f" D.E. Rmvd: {self.dead_ends_removed}\n" \
+            +  f" H. Trnctd: {self.halls_truncated}\n" \
             +  f"     Fails: {self.fails}\n" \
             +  f" MaxConsec: {self.max_consec}\n" \
             +  f"      Time: {self.time}\n" \
@@ -543,7 +551,7 @@ class Dungeon:
         self.root               = None
         self.dead_ends          = 0
         self.dead_ends_removed  = 0
-        self.halls_shortened    = 0
+        self.halls_truncated    = 0
 
         # Failsafe setup
         self.fails              = 0
@@ -705,26 +713,48 @@ class Dungeon:
             remove = False
             dead = not h.children and not h.loops
             cull = random() < self.layer_params[h.z][PARAM_ORDERLINESS] # Orderliness Modifier
-            if (self.ALLOW_DEAD_ENDS == False or (self.ALLOW_DEAD_ENDS == None and cull)) and dead and not h.contents:
-                # Dead end hall we're going to remove
-                remove = True
-                self.dead_ends_removed += 1
-                self.write(h, write_space=True, erase=True)
-                self.halls[len(self.halls)-i-1] = None
-                self.places[h.pid] = None
-                self.layer_places[h.z].remove(h)
-                self.layer_areas[h.z] -= Dungeon.area_of(h)
-                h.parent.children.remove(h)
-                if h is self.root: self.root = None # Edge case
-                del(h)
-            if (self.TRUNCATE_HALLS == True or (self.TRUNCATE_HALLS == None and cull)) and (not dead or h.contents):
-                if h.orientation == UD:
-                    # TODO: update size!
-                    self.halls_shortened += 1 # ONLY if need to!
-                    pass
-                if h.orientation == LR:
-                    self.halls_shortened += 1
-                    pass
+            if dead and not h.contents:
+                if self.ALLOW_DEAD_ENDS == False or (self.ALLOW_DEAD_ENDS == None and cull):
+                    # Dead end hall we're going to remove
+                    remove = True
+                    self.dead_ends_removed += 1
+                    self.write(h, write_space=True, erase=True)
+                    self.halls[len(self.halls)-i-1] = None
+                    self.places[h.pid] = None
+                    self.layer_places[h.z].remove(h)
+                    self.layer_areas[h.z] -= Dungeon.area_of(h)
+                    h.parent.children.remove(h)
+                    if h is self.root: self.root = None # Edge case
+                    del(h)
+            elif self.TRUNCATE_HALLS == True or (self.TRUNCATE_HALLS == None and cull):
+                # Hall with too-long ends we're going to shorten
+                changed = False
+                if h.orientation == UD: # Vertical Hall # TODO: FIX BUG!
+                    y_coords = [h.door_in[1]] + [c.door_in[1] for c in h.children] + [l[0][1] for l in h.loops] + [k[0][1] for k in h.contents]
+                    U, D = min(y_coords), max(y_coords)
+                    if U > h.y+1 or D < h.y+h.h-2: # BUG NOT HERE
+                        self.write(h, write_space=True, erase=True, only_overwrite_symbol=SPACE) # Would work without only_overwrite_symbol because stairs, doors, loops, and contents not drawn yet!
+                        area = Dungeon.area_of(h)
+                        h.length = min(h.length, D-U+3) # BUG NOT HERE
+                        h.h = h.length
+                        h.y = max(h.y, U-1)
+                        changed = True
+                elif h.orientation == LR: # Horizontal Hall
+                    x_coords = [h.door_in[2]] + [c.door_in[2] for c in h.children] + [l[0][2] for l in h.loops] + [k[0][2] for k in h.contents]
+                    L, R = min(x_coords), max(x_coords)
+                    if L > h.x+1 or R < h.x+h.w-2:
+                        self.write(h, write_space=True, erase=True, only_overwrite_symbol=SPACE) # ''
+                        area = Dungeon.area_of(h)
+                        h.length = min(h.length, R-L+3)
+                        h.w = h.length
+                        h.x = max(h.x, L-1)
+                        changed = True
+                if changed:
+                    h.area = h.length-2
+                    h.perimeter_area = 2*h.length + 2*(self.HALL_BREADTH) - 4
+                    self.layer_areas[h.z] -= area-Dungeon.area_of(h)
+                    self.write(h, write_space=True, only_overwrite_symbol=SOLID) # ''
+                    self.halls_truncated += 1
             if dead and not remove:
                 self.dead_ends += 1
         # Filter the lists to update the changes
