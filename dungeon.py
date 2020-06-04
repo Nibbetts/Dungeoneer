@@ -215,6 +215,7 @@ class Dungeon:
             locked_ratio=.25,    down_stair_ratio=.08, up_stair_ratio=.02,
             room_ratio=.5,       loop_ratio=.02,       vary_room_ratio=True,
             top_orderliness=1,   bottom_orderliness=0, fade_orderliness=True,
+            allow_dead_ends=None,
             consec_fails=20,     max_consec_fails=100, max_fails=10000,
             highlight_borders=False, report=True, seed=None ): # Same seed will only rebuild the same dungeon if given the same parameters!
 
@@ -274,7 +275,8 @@ class Dungeon:
         # Orderliness
         self.TOP_ORDERLINESS    = top_orderliness    # Generally how organized rooms and hallways are at most, or at the top of the dungeon if FADE_ORDERLINESS.
         self.BOTTOM_ORDERLINESS = bottom_orderliness # Minimum orderliness, or orderliness at the bottom of the dungeon if FADE_ORDERLINESS.
-        self.FADE_ORDERLINESS   = fade_orderliness   # If true, order will change in a gradient from top to bottom of dungeon. If false, will pick a random value between top and bottom for each layer.
+        self.FADE_ORDERLINESS   = fade_orderliness   # If True, order will change in a gradient from top to bottom of dungeon. If false, will pick a random value between top and bottom for each layer.
+        self.ALLOW_DEAD_ENDS    = allow_dead_ends    # If True, none are removed; if False, all are removed; if None, follows orderliness based probability.
 
         # Procedural Generation Boundaries          # NOTE: fail count limits tend to affect how filled in a dungeon is when generation finishes.
         self.CONSEC_FAILS       = consec_fails       # Typical limit on consecutive location placement fails for some aspects of dungeon generation
@@ -305,7 +307,9 @@ class Dungeon:
         # self.layer_params      # List of layer parameter lists, in depth order
         # self.layer_bosses      # List of lists of boss rooms in each layer
         # self.layer_fails       # Array of per-layer fail counts
-        # self.dead_ends         # Count of dead-end hallways
+        # self.dead_ends         # Count of dead-end hallways not removed
+        # self.dead_ends_removed # Count of dead-end hallways removed
+        # self.halls_shortened   # Count of hallways shortened
         # self.seed              # The seed used to generate this dungeon given these parameters
         # self.time              # How long it took to generate, in seconds
 
@@ -537,6 +541,8 @@ class Dungeon:
         self.layer_bosses       = [[] for _ in range(self.d)]
         self.root               = None
         self.dead_ends          = 0
+        self.dead_ends_removed  = 0
+        self.halls_shortened    = 0
 
         # Failsafe setup
         self.fails              = 0
@@ -695,9 +701,12 @@ class Dungeon:
         # Move backward through the halls to clean up loose ends
         for i, h in enumerate(self.halls[::-1]):
             # TODO: add param to allow doors in halls, then clean up depending on orderliness?
-            if random() < self.layer_params[h.z][PARAM_ORDERLINESS]: # Orderliness Modifier
+            remove = False
+            if self.ALLOW_DEAD_ENDS == False or (self.ALLOW_DEAD_ENDS == None and random() < self.layer_params[h.z][PARAM_ORDERLINESS]): # Orderliness Modifier
                 if not h.children and not h.contents and not h.loops:
                     # Dead end hall we're going to remove
+                    remove = True
+                    self.dead_ends_removed += 1
                     self.write(h, write_space=True, erase=True)
                     self.halls[len(self.halls)-i-1] = None
                     self.places[h.pid] = None
@@ -707,11 +716,13 @@ class Dungeon:
                     if h is self.root: self.root = None # Edge case
                     del(h)
                 elif h.orientation == UD:
-                    pass
+                    self.halls_shortened += 1
                     # TODO: update size!
-                elif h.orientation == LR:
                     pass
-            elif not len(h.children) and not len(h.loops):
+                elif h.orientation == LR:
+                    self.halls_shortened += 1
+                    pass
+            if not remove and not len(h.children) and not len(h.loops):
                 self.dead_ends += 1
         # Filter the lists to update the changes
         f = (lambda x: x is not None)
