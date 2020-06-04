@@ -717,7 +717,7 @@ class Dungeon:
                 h.parent.children.remove(h)
                 if h is self.root: self.root = None # Edge case
                 del(h)
-            if (self.TRUNCATE_HALLS == True or (self.TRUNCATE_HALLS == None and cull)):
+            if (self.TRUNCATE_HALLS == True or (self.TRUNCATE_HALLS == None and cull)) and (not dead or h.contents):
                 if h.orientation == UD:
                     # TODO: update size!
                     self.halls_shortened += 1 # ONLY if need to!
