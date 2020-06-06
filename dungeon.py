@@ -456,13 +456,13 @@ class Dungeon:
         found = []
         for p in self.layer_places[z]:
             if p in ignore: continue
-            if check_borders != False: # True or None
-                if allow_corners and ((p.x == x) or (p.y == y) or (p.x+p.w-1 == x) or (p.y+p.h-1)) \
-                        or ((p.x == x) ^ (p.y == y) ^ (p.x+p.w-1 == x) ^ (p.y+p.h-1)):
-                    if first_only: return p
-                    else: found.append(p)
-            elif check_borders != True: # False or None
-                if (p.x < x) and (p.y < y) and (p.x+p.w-1 > x) and (p.y+p.h-1 > x):
+            if (p.x < x) and (p.y < y) and (p.x+p.w-1 > x) and (p.y+p.h-1 > x):
+                if check_borders != False: # True or None
+                    if allow_corners and ((p.x == x) or (p.y == y) or (p.x+p.w-1 == x) or (p.y+p.h-1)) \
+                            or ((p.x == x) ^ (p.y == y) ^ (p.x+p.w-1 == x) ^ (p.y+p.h-1)):
+                        if first_only: return p
+                        else: found.append(p)
+                elif check_borders != True: # False or None
                     if first_only: return p
                     else: found.append(p)
         return found
