@@ -32,7 +32,7 @@ KEY        = ord('⚷')
 STAIR_UP   = 0x21D7
 STAIR_DOWN = 0x21D8
 STAIR_BOTH = 0x2928
-LOOP       = PART2
+LOOP       = DOOR # ord('L')
 
 CHECKER    = "▀▄"
 GRID       = "─┼"
@@ -47,7 +47,7 @@ GRID       = "─┼"
 - enemies that do nothing but bounce back and forth off walls?
 - traps?
 - T for trees above ground?
-- start as a spelunker, with a cavein? Flashlight is directional, lantern fills room or hall
+- Flashlight is directional, lantern fills room or hall
 """
 
 class Place(ABC):
@@ -136,7 +136,7 @@ class Room(Place):
         # Make the Room
         corner_x = x - L
         corner_y = y - U
-        room = Room(pid, corner_x, corner_y, z, w, h, door_in=(z, y, x), parent=parent, boss=boss) # TODO: fix the None here! Move room creation out of place function.
+        room = Room(pid, corner_x, corner_y, z, w, h, door_in=(z, y, x), parent=parent, boss=boss)
         if parent: parent.children.append(room)
         else: dungeon.root = room
         return room
@@ -213,13 +213,14 @@ class Dungeon:
             max_backtrack=20,    max_key_backtrack=10,
             max_density=1,       min_density=0,        # Non-restrictive defaults
             locked_ratio=.25,    down_stair_ratio=.08, up_stair_ratio=.02,
-            room_ratio=.5,       loop_ratio=.02,       vary_room_ratio=True,
+            room_ratio=.5,       loop_ratio=.1,        vary_room_ratio=True,
             boss_branch_weight=8,room_branch_weight=1, hall_branch_weight=2,
-            hall_doors=False,    hall_locks=False,
+            hall_doors=False,    hall_locks=False,     #loop_locks=True,
             top_orderliness=1,   bottom_orderliness=0, fade_orderliness=True,
             allow_dead_ends=None,truncate_halls=None,
             consec_fails=20,     max_consec_fails=100, max_fails=10000,
-            highlight_borders=False, report=True, seed=None ): # Same seed will only rebuild the same dungeon if given the same parameters!
+            highlight_borders=False,
+            report=True, seed=None ): # Same seed will only rebuild the same dungeon if given the same parameters!
 
         # Check some input validity
         if w < 5 or h < 5 or d < 1 \
@@ -278,7 +279,7 @@ class Dungeon:
         self.DOWN_STAIR_RATIO   = down_stair_ratio   # Likelihood to go down when we don't have to, or of having more down stair branching
         self.UP_STAIR_RATIO     = up_stair_ratio     # Likelihood of going up (Adds complexity, more maze-like)
         self.ROOM_RATIO         = room_ratio         # Probability ratio of rooms to halls (not including boss rooms)
-        self.LOOP_RATIO         = loop_ratio         # Likelihood of creating a loop when the option is found #TODO: use this!
+        self.LOOP_RATIO         = loop_ratio         # Likelihood of creating a loop when the option is found
 
         # Orderliness
         self.TOP_ORDERLINESS    = top_orderliness    # Generally how organized rooms and hallways are at most, or at the top of the dungeon if FADE_ORDERLINESS.
@@ -308,14 +309,16 @@ class Dungeon:
         # self.places            # Rooms and Halls together,     in creation order
         # self.layer_places      # Rooms + Halls in each layer,  in creation order
         # self.layer_areas       # Approximate used 2D area of each layer
-        # self.doors             # List of Doors,                in creation order
-        # self.stairs_up         # List of upward stairways,     in creation order
-        # self.stairs_down       # List of downward stairways,   in creation order
-        # self.locks             # Dict mapping locked door coords to key ID's
-        # self.keys              # Dict mapping key coords to key ID's
         # self.layer_params      # List of layer parameter lists, in depth order
         # self.layer_bosses      # List of lists of boss rooms in each layer
         # self.layer_fails       # Array of per-layer fail counts
+        # self.doors             # List of Doors,                in creation order
+        # self.stairs_up         # List of upward stairways,     in creation order
+        # self.stairs_down       # List of downward stairways,   in creation order
+        # self.stairs_inverted   # List of places higher than their parent, in creation order
+        # self.locks             # Dict mapping locked door coords to key ID's
+        # self.keys              # Dict mapping key coords to key ID's
+        # self.loops             # List of loops
         # self.dead_ends         # Count of dead-end hallways not removed
         # self.dead_ends_removed # Count of dead-end hallways removed
         # self.halls_truncated   # Count of hallways shortened
@@ -456,15 +459,20 @@ class Dungeon:
         found = []
         for p in self.layer_places[z]:
             if p in ignore: continue
-            if check_borders != False and ((p.x <= x) and (p.y <= y) and (p.x+p.w-1 >= x) and (p.y+p.h-1 >= x)): # True or None
-                if allow_corners and ((p.x == x) or (p.y == y) or (p.x+p.w-1 == x) or (p.y+p.h-1)) \
-                        or ((p.x == x) ^ (p.y == y) ^ (p.x+p.w-1 == x) ^ (p.y+p.h-1)):
+            if check_borders != False and ((p.x <= x) and (p.y <= y) and (p.x+p.w-1 >= x) and (p.y+p.h-1 >= y)): # True or None
+                if allow_corners and ((p.x == x) or (p.y == y) or (p.x+p.w-1 == x) or (p.y+p.h-1 == y)) \
+                        or ((p.x == x) ^ (p.y == y) ^ (p.x+p.w-1 == x) ^ (p.y+p.h-1 == y)):
                     if first_only: return p
                     else: found.append(p)
-            elif check_borders != True and ((p.x < x) and (p.y < y) and (p.x+p.w-1 > x) and (p.y+p.h-1 > x)): # False or None
+            elif check_borders != True and ((p.x < x) and (p.y < y) and (p.x+p.w-1 > x) and (p.y+p.h-1 > y)): # False or None
                 if first_only: return p
                 else: found.append(p)
-        return found
+        return None if first_only else found
+        # def find_at(self, x, y, z, ignore):
+        #     for p in self.layer_places[z]:
+        #         if p is ignore: continue
+        #         if ((p.x <= x) and (p.y <= y) and (p.x+p.w-1 >= x) and (p.y+p.h-1 >= y)) and ((p.x == x) ^ (p.y == y) ^ (p.x+p.w-1 == x) ^ (p.y+p.h-1 == y)):
+        #             return p
 
     def write(self, place, write_space=False, write_door_in=False, write_loops=False, erase=False, only_overwrite_symbol=None):
         if write_space:
@@ -477,27 +485,33 @@ class Dungeon:
         if write_door_in:
             # Write entryway not occurring on this level
             if place.parent and place.parent.z != place.z:
-                symbol = SPACE if erase \
-                    else STAIR_UP if place.parent.z > place.z \
-                    else STAIR_DOWN
                 coords = place.parent.z, place.door_in[1], place.door_in[2]
                 if only_overwrite_symbol is None or self.map[coords] == only_overwrite_symbol:
+                    symbol = SPACE if erase \
+                        else STAIR_UP if place.parent.z > place.z \
+                        else STAIR_DOWN
                     self.map[coords] = symbol
             # Write entryway occurring on this level
-            symbol = SOLID if erase \
-                else STAIR_UP if (place.parent is None) or (place.parent.z < place.z) \
-                else STAIR_DOWN if place.parent.z > place.z \
-                else LOCK if place.door_in in self.locks \
-                else SPACE if (not place.room and not (place.parent and place.parent.room) and not self.HALL_DOORS) \
-                else DOOR
-            # NOTE on above: Only conditionally draw doors between halls.
             if only_overwrite_symbol is None or self.map[place.door_in] == only_overwrite_symbol:
+                symbol = SOLID if erase \
+                    else STAIR_UP if (place.parent is None) or (place.parent.z < place.z) \
+                    else STAIR_DOWN if place.parent.z > place.z \
+                    else LOCK if place.door_in in self.locks \
+                    else SPACE if (not place.room and not (place.parent and place.parent.room) and not self.HALL_DOORS) \
+                    else DOOR
+                # NOTE on above: Only conditionally draw doors between halls.
                 self.map[place.door_in] = symbol
         
         if write_loops:
+            # Write loops (currently all are on this level)
             for loop in place.loops:
                 if only_overwrite_symbol is None or self.map[loop[0]] == only_overwrite_symbol:
-                    self.map[loop[0]] = SOLID if erase else LOOP
+                    symbol = SOLID if erase \
+                        else LOCK if loop[0] in self.locks \
+                        else SPACE if (not place.room and not loop[1].room and not self.HALL_DOORS) \
+                        else LOOP
+                    # NOTE: Loops essentially act like doors
+                    self.map[loop[0]] = symbol
 
         # if write_doors_out: # NOTE: INCOMPLETE! If use, must add stair writing on both levels!
         #     for child in place.children:
@@ -540,8 +554,11 @@ class Dungeon:
             +  f"             Rooms: {len(self.rooms)}\n" \
             +  f"             Halls: {len(self.halls)}\n" \
             +  f"             Doors: {len(self.doors)}\n" \
-            +  f"      Locked Doors: {len(self.locks)}\n" \
+            +  f"              Keys: {len(self.keys)}\n" \
+            +  f"             Locks: {len(self.locks)}\n" \
             +  f"            Stairs: {len(self.stairs_up)}\n" \
+            +  f"   Inverted Stairs: {len(self.stairs_inverted)}\n" \
+            +  f"             Loops: {len(self.loops)}\n" \
             +   "\n" \
             +  f"         Dead Ends: {self.dead_ends}\n" \
             +  f" Dead Ends Removed: {self.dead_ends_removed}\n" \
@@ -572,13 +589,15 @@ class Dungeon:
         self.places             = [] # Rooms and Halls together, in creation order
         self.layer_places       = [[] for _ in range(self.d)]
         self.layer_areas        = np.zeros(self.d)
+        self.layer_params       = [[0, 0, 0, 0, 0, False, 0] for _ in range(self.d)]
+        self.layer_bosses       = [[] for _ in range(self.d)]
         self.doors              = []
         self.stairs_up          = []
         self.stairs_down        = []
+        self.stairs_inverted    = []
         self.locks              = {}
         self.keys               = {}
-        self.layer_params       = [[0, 0, 0, 0, 0, False, 0] for _ in range(self.d)]
-        self.layer_bosses       = [[] for _ in range(self.d)]
+        self.loops              = []
         self.root               = None
         self.dead_ends          = 0
         self.dead_ends_removed  = 0
@@ -609,6 +628,7 @@ class Dungeon:
         # Non-member variables
         orderly_hall_start      = round(2 * self.w * self.h / self.MAX_HALL**2)
         branching_weights       = [] # Branching weight for each place in places. Correct up until we start removing hallways after completing the main while loop
+        layer_complete          = np.zeros(self.d)
 
         # INDIVIDUAL LAYER PARAMETER CALCULATIONS
         # Do some precalculations
@@ -639,7 +659,7 @@ class Dungeon:
             self.layer_params[l][PARAM_LOCKED_RATIO     ] = uniform(self.LOCKED_RATIO-locked_radius, self.LOCKED_RATIO+locked_radius)
             self.layer_params[l][PARAM_DOWN_STAIR_RATIO ] = uniform(self.DOWN_STAIR_RATIO-down_radius, self.DOWN_STAIR_RATIO+down_radius)
             self.layer_params[l][PARAM_UP_STAIR_RATIO   ] = uniform(self.UP_STAIR_RATIO-up_radius, self.UP_STAIR_RATIO+up_radius)
-            self.layer_params[l][PARAM_LOOP_RATIO       ] = uniform(self.LOOP_RATIO-loop_radius, self.LOOP_RATIO+loop_radius) # TODO: use this!
+            self.layer_params[l][PARAM_LOOP_RATIO       ] = uniform(self.LOOP_RATIO-loop_radius, self.LOOP_RATIO+loop_radius)
             self.layer_params[l][PARAM_ORDERLINESS      ] = uniform(self.TOP_ORDERLINESS, self.BOTTOM_ORDERLINESS) if orderliness is None else orderliness[l] 
 
 
@@ -648,13 +668,16 @@ class Dungeon:
         # TODO: fix end conditions to work with density instead, keep track of local density, and local fails, and layers/places that haven't failed out?
         # Stop only once the bottom layers fill up enough
         # while len(self.layer_places[self.d-1]) < 5 and self.consec_fails < 15:
+        # while not np.all(layer_complete) or 
         while ((not self.places or self.places[-1].z != self.d-1) and self.consec_fails < self.CONSEC_FAILS) \
                 or self.consec_fails < self.CONSEC_FAILS or len(self.layer_places[self.d-1]) < 5 \
                 and self.consec_fails < self.MAX_CONSEC_FAILS and self.fails < self.MAX_FAILS:
             # Find a Room or Hall to focus on
-            # place = self.places[-randint(1, min(len(self.places), self.MAX_BACKTRACK+1))] if self.places else None
-            backtrack = min(len(self.places), self.MAX_BACKTRACK+1)
-            place = choices(self.places[-backtrack:], weights=branching_weights[-backtrack:])[0] if self.places else None
+            if self.MAX_BACKTRACK is None:
+                place = choices(self.places, weights=branching_weights)[0] if self.places else None
+            else:
+                backtrack = min(len(self.places), self.MAX_BACKTRACK+1)
+                place = choices(self.places[-backtrack:], weights=branching_weights[-backtrack:])[0] if self.places else None
 
             # Decide whether to build down or adjacent.
             if not place:
@@ -713,9 +736,9 @@ class Dungeon:
                     new_place = Hallway.place(self, pid, x, y, z, place, stair=stair, allow_shrink=allow_shrink)
                 room = False
 
-            # Make the necessary additions to our lists
             if new_place:
-                # We succeeded in building the room or Hall
+                # We succeeded in building the room or Hall, so
+                # Make the necessary additions to our lists
                 reset_consec_fails(z)
                 self.write(new_place, write_space=True)
                 self.places.append(new_place)
@@ -729,9 +752,16 @@ class Dungeon:
                 self.layer_places[z].append(new_place)
                 self.layer_areas[z] += Dungeon.area_of(new_place)
                 if new_place.boss: self.layer_bosses[z].append(new_place)
-            else:
-                # We failed to build the room
-                increment_fails(z)
+                if stair == -1: self.stairs_inverted.append(new_place)
+            elif place and not stair and random() < self.layer_params[z][PARAM_LOOP_RATIO]: # TODO: adjust how ratio is counted, because it is highly dependent on fails.
+                # We failed to build the place, so try making a loop
+                other_place = self.find_at(x, y, z, ignore=[place], allow_corners=False, check_borders=True, first_only=True) if place else None
+                if other_place and (other_place not in (place.children + [place.parent] + [l[1] for l in place.loops])):
+                    place.loops.append(((z, y, x), other_place))
+                    other_place.loops.append(((z, y, x), place))
+                    self.loops.append(((z, y, x), place, other_place))
+                else: increment_fails(z) # Failed to build place or loop to place
+            else: increment_fails(z)
 
         # CLEAN UP
         # Clean up boss layer misses
@@ -795,7 +825,7 @@ class Dungeon:
         self.places = list(filter(f, self.places))
         for i, p in enumerate(self.places): p.pid = i # Update the PID's
 
-        # DRAW DOORS, GENERATE LOCKS AND LOOPS
+        # DRAW DOORS, GENERATE LOCKS
         room_index = -1
         for p in self.places:
             if p.room: room_index += 1
@@ -821,19 +851,20 @@ class Dungeon:
                 # Decide whether to lock this one
                 key_id = None
                 if (self.HALL_LOCKS or p.room) and random() < self.layer_params[z][PARAM_LOCKED_RATIO] and (room_index+1 > p.room):
-                    # key_room = choice(self.rooms[-self.MAX_KEY_BACKTRACK-2:-1] if p.room else self.rooms[-self.MAX_KEY_BACKTRACK-1:])
-                    key_room = choice(self.rooms[max(0, room_index-self.MAX_KEY_BACKTRACK-p.room) : room_index-p.room+1])
+                    if self.MAX_KEY_BACKTRACK is None:
+                        key_room = choice(self.rooms[:-1]) if p.room else choice(self.rooms)
+                    else:
+                        key_room = choice(self.rooms[max(0, room_index-self.MAX_KEY_BACKTRACK-p.room) : room_index-p.room+1])
                     key_coords = (key_room.z, randint(key_room.y+1, key_room.y+key_room.h-2), randint(key_room.x+1, key_room.x+key_room.w-2))
                     if self.map[key_coords] == SPACE:
                         # If many very small rooms and/or many stairs, ratio of locked doors will go down.
                         key_id = len(self.keys)
                         key_room.contents.append(((z, y, x), key_id))
                         self.locks[(z,y,x)] = key_id
+                        for loop in p.loops:
+                            if p.pid > loop[1].pid: self.locks[loop[0]] = key_id
                         self.keys[key_coords] = key_id
-                        # Places draw doors when placed, but not locked doors or keys
-                        # self.map[z, y, x] = LOCK
                         self.map[key_coords] = KEY
-            # TODO: In making loops add to BOTH rooms?
             self.write(p, write_space=False, write_door_in=True, write_loops=True) # Need to draw doors, even if what we draw is SPACE
 
         # GENERATE MONSTERS, BOSSES, TREASURES, MAPS
@@ -893,12 +924,10 @@ class Dungeon:
 
         "no_halls" : { # Extreme Test
             "room_ratio"        : 1,
-            # TODO: Turn off orderly?? Or would it work here?
         },
 
         "no_rooms" : { # Extreme Test
             "room_ratio"        : 0,
-            "locked_ratio"      : 0,
         },
 
         "one_layer" : { # Large, one-layer dungeon
@@ -908,8 +937,8 @@ class Dungeon:
             "boss_layer_ratio"  : 0,
             "boss_layer_rooms"  : 1,
             "boss_room_delay"   : 40,
-            "max_backtrack"     : None, # TODO: Modify these to allow None for infinite backtrack
-            "max_key_backtrack" : None, # ''
+            "max_backtrack"     : None,
+            "max_key_backtrack" : None,
             # TODO: Modify fails if not auto calculated
         },
 
@@ -925,7 +954,7 @@ class Dungeon:
 
         "orderly" : { # High orderliness
             "bottom_orderliness": 1,
-            "loop_ratio"        : 0, # ??s
+            "loop_ratio"        : 0,
         },
 
         "maze" : { # Mostly passages, more up-stairs
