@@ -48,6 +48,7 @@ GRID       = "─┼"
 - traps?
 - T for trees above ground?
 - Flashlight is directional, lantern fills room or hall
+# TODO: Lock doors leading from a boss room, and place key in boss room. Lock door into boss room?
 """
 
 class Place(ABC):
@@ -204,23 +205,24 @@ class Dungeon:
 
     def __init__(self,
             w=TERM_W//2,  h=TERM_H,  d=10, # W/2 since using 2 chars per square
-            min_room=None,       max_room=8,
-            min_hall=3,          max_hall=18,          hall_breadth=1,
-            boss_min_room=8,     boss_max_room=20,     boss_min_area=170,
-            boss_bottom=True,    boss_after_layer=3,   boss_layer_rooms=None,
-            boss_layer_ratio=.2, boss_room_delay=0,    boss_layer_count=None,
+            min_room=None,        max_room=8,
+            min_hall=3,           max_hall=18,          hall_breadth=1,
+            boss_min_room=8,      boss_max_room=20,     boss_min_area=170,
+            boss_bottom=True,     boss_after_layer=3,   boss_layer_rooms=None,
+            boss_layer_ratio=.2,  boss_room_delay=0,    boss_layer_count=None,
             boss_allow_stair=False,
-            max_backtrack=20,    max_key_backtrack=10,
-            max_density=1,       min_density=0,        # Non-restrictive defaults
-            locked_ratio=.25,    down_stair_ratio=.08, up_stair_ratio=.02,
-            room_ratio=.5,       loop_ratio=.1,        vary_room_ratio=True,
-            boss_branch_weight=8,room_branch_weight=1, hall_branch_weight=2,
-            hall_doors=False,    hall_locks=False,     #loop_locks=True,
-            top_orderliness=1,   bottom_orderliness=0, fade_orderliness=True,
-            allow_dead_ends=None,truncate_halls=None,
-            consec_fails=20,     max_consec_fails=100, max_fails=10000,
+            max_backtrack=20,     max_key_backtrack=10,
+            density=.75,          override_backtrack=True,
+            locked_ratio=.25,     down_stair_ratio=.05, up_stair_ratio=.1,
+            room_ratio=.5,        loop_ratio=.1,        vary_room_ratio=True,
+            boss_branch_weight=6, room_branch_weight=1, hall_branch_weight=2,
+            hall_doors=False,     hall_locks=False,     #loop_locks=True,
+            top_orderliness=1,    bottom_orderliness=0, fade_orderliness=True,
+            allow_dead_ends=None, truncate_halls=None,
+            hall_headstart=None,  hall_end_tries=None,
+            max_consec_fails=200, max_fails=None,
             highlight_borders=False,
-            report=True, seed=None ): # Same seed will only rebuild the same dungeon if given the same parameters!
+            report=True,          seed=None ): # Same seed will only rebuild the same dungeon if given the same parameters!
 
         # Check some input validity
         if w < 5 or h < 5 or d < 1 \
@@ -229,15 +231,16 @@ class Dungeon:
                 or boss_after_layer < 0 or (boss_layer_rooms and boss_layer_rooms < 0) or boss_layer_ratio < 0 or boss_layer_ratio > 1 \
                 or boss_room_delay < 0 or (boss_layer_count and (boss_layer_count < 0 or boss_layer_count > d-boss_after_layer)) \
                 or (max_backtrack and max_backtrack < 0) or (max_key_backtrack and max_key_backtrack < 0) \
-                or max_density > 1 or max_density <= 0 or min_density > max_density or min_density > 1 or min_density < 0 \
+                or density > 1 or density < 0 \
                 or locked_ratio < 0 or locked_ratio > 1 or down_stair_ratio < 0 or down_stair_ratio > 1 or up_stair_ratio < 0 or up_stair_ratio > 1 \
                 or room_ratio < 0 or room_ratio > 1 or loop_ratio < 0 or loop_ratio > 1 \
                 or top_orderliness > 1 or top_orderliness < 0 or bottom_orderliness > 1 or bottom_orderliness < 0 \
+                or (hall_headstart and hall_headstart < 0) \
                 or boss_branch_weight < 0 or room_branch_weight < 0 or hall_branch_weight < 0 \
-                or consec_fails < 1 or max_consec_fails < 1 or max_fails < 1:
+                or max_consec_fails < 1 or (max_fails and max_fails < 1):
             raise(ValueError("Invalid value given in Dungeon parameters"))
         if hall_breadth != HALL_BREADTH: raise(NotImplementedError("Wider halls not currently implemented"))
-        if min_density > FULL_DENSITY: print(f"WARNING: min_density > {FULL_DENSITY} is likely to generate large failure counts and be impossible to reach")
+        if density > FULL_DENSITY: print(f"WARNING: density > {FULL_DENSITY} is likely to generate large failure counts and be difficult to reach")
 
         # Global Dungeon Proportion Characteristics
         self.w = w # Dungeon Width
@@ -245,10 +248,10 @@ class Dungeon:
         self.d = d # Dungeon Depth
 
         self.MIN_ROOM           = (min_room      + 2) if min_room else min_room # min_room defaults to None for the special size 2x3, neither 2 nor 3
-        self.MAX_ROOM           = max_room       + 2 # Max dimension for a normal room
-        self.MIN_HALL           = min_hall       + 2 # Min hall length
-        self.MAX_HALL           = max_hall       + 2 # Max hall length
-        self.HALL_BREADTH       = hall_breadth   + 2 # Hall Breadth
+        self.MAX_ROOM           = max_room       + 2 # Max dimension for a normal room - user inputs the inner size
+        self.MIN_HALL           = min_hall       + 2 # Min hall length - user inputs the inner size
+        self.MAX_HALL           = max_hall       + 2 # Max hall length - user inputs the inner size
+        self.HALL_BREADTH       = hall_breadth   + 2 # Hall Breadth - user inputs the inner size
         
         # Boss Layer/Room parameters
         self.BOSS_MIN_ROOM      = boss_min_room  + 2 # Min dimension for a boss room
@@ -263,10 +266,10 @@ class Dungeon:
         self.BOSS_ALLOW_STAIR   = boss_allow_stair   # Allow stairs to be the first entrance to a boss room (Loops of course will mean you may be able to enter another way).
 
         # Complexity and other Global Characteristics
-        self.MAX_BACKTRACK      = max_backtrack      # How many rooms/halls back we might branch anew. This is not a direct control, but largely influences branching and the likelihood of long independent branches.
+        self.MAX_BACKTRACK      = max_backtrack      # How many rooms/halls back we might branch anew. This is not a direct control, but largely influences branching and the likelihood of long independent branches. May be overridden to meet density if override_density is True.
         self.MAX_KEY_BACKTRACK  = max_key_backtrack  # How many rooms (only) back we might place a key from it's door
-        self.MAX_DENSITY        = max_density        # May not be met, but stops after this density. # TODO: use this and min as well!
-        self.MIN_DENSITY        = min_density        # May not be met, especially with low backtracking or low fail limits or high down stair ratio
+        self.DENSITY            = density            # May not be met, especially with low fail limits or high down stair ratio or low backtracking unless override_backtrack True, but does stop after this density. NOTE: Density may be reduced again by removing spare halls.
+        self.OVERRIDE_BACKTRACK = override_backtrack # Whether or not to go back and add more on after to layers that aren't dense enough yet, breaking max_backtrack. # TODO: use this
         self.VARY_ROOM_RATIO    = vary_room_ratio    # Use a varied trimodal distribution for room/hall ratios (Turn off to get all layers to match ratios)
         self.BOSS_BRANCH_WEIGHT = boss_branch_weight # How boss rooms are comparatively weighted when deciding which recent place to randomly branch off of; higher numbers compared to other branching weights make it more likely.
         self.ROOM_BRANCH_WEIGHT = room_branch_weight # ''  other rooms ''
@@ -277,7 +280,7 @@ class Dungeon:
         # Global Characteristics that may be locally modified
         self.LOCKED_RATIO       = locked_ratio       # Likelihood to attempt to lock a door
         self.DOWN_STAIR_RATIO   = down_stair_ratio   # Likelihood to go down when we don't have to, or of having more down stair branching
-        self.UP_STAIR_RATIO     = up_stair_ratio     # Likelihood of going up (Adds complexity, more maze-like)
+        self.UP_STAIR_RATIO     = up_stair_ratio     # Likelihood of going up instead of down, creating an inverted stair (Adds complexity, more maze-like)
         self.ROOM_RATIO         = room_ratio         # Probability ratio of rooms to halls (not including boss rooms)
         self.LOOP_RATIO         = loop_ratio         # Likelihood of creating a loop when the option is found
 
@@ -286,12 +289,13 @@ class Dungeon:
         self.BOTTOM_ORDERLINESS = bottom_orderliness # Minimum orderliness, or orderliness at the bottom of the dungeon if FADE_ORDERLINESS.
         self.FADE_ORDERLINESS   = fade_orderliness   # If True, order will change in a gradient from top to bottom of dungeon. If false, will pick a random value between top and bottom for each layer.
         self.ALLOW_DEAD_ENDS    = allow_dead_ends    # If True, none are removed; if False, all are removed; if None, follows orderliness based probability.
-        self.TRUNCATE_HALLS     = truncate_halls     # If True, all are shortened; if False, none are; if None, follows orderliness based probability. NOTE: Truncating halls can result in halls shorter than min_hall
+        self.TRUNCATE_HALLS     = truncate_halls     # If True, all are shortened; if False, none are; if None, follows orderliness based probability. NOTE: Truncating halls can result in halls shorter than min_hall.
+        self.HALL_HEADSTART     = hall_headstart if hall_headstart else round(2*w*h / self.MAX_HALL**2) # How many halls we'll try to generate, when being orderly, before other things on a level. Use None for an automatically estimated useful number.
+        self.HALL_END_TRIES     = hall_end_tries if hall_end_tries else 3*self.HALL_HEADSTART # How many tries we get to generate things at the ends of halls, when being orderly, before off of other parts of halls on a level. Use None for an automatically estimated useful number.
 
-        # Procedural Generation Boundaries           # NOTE: fail count limits tend to affect how filled in a dungeon is when generation finishes.
-        self.CONSEC_FAILS       = consec_fails       # Typical limit on consecutive location placement fails for some aspects of dungeon generation
-        self.MAX_CONSEC_FAILS   = max_consec_fails   # Hard limit on consecutive fails before stopping the generator
-        self.MAX_FAILS          = max_fails          # Hard limit on total fails before stopping the generator
+        # Procedural Generation Boundaries           # NOTE: fail count limits affect the attainability of the desired density.
+        self.MAX_CONSEC_FAILS   = max_consec_fails   # Hard limit on consecutive fails per layer before stopping the generator. Estimations ~200 for common parameter sets, so no smart calculator, but odd configurations may require more.
+        self.MAX_FAILS          = max_fails if max_fails else round(w*h*d/3) # Hard limit on total fails before stopping the generator. Use None for a smart estimation based on dungeon size.
         # TODO: replace fails limits with NONE default and a calculation based on dungeon volume?
         
         # Aesthetics
@@ -309,9 +313,9 @@ class Dungeon:
         # self.places            # Rooms and Halls together,     in creation order
         # self.layer_places      # Rooms + Halls in each layer,  in creation order
         # self.layer_areas       # Approximate used 2D area of each layer
+        # self.layer_densities   # Density metric for each layer
         # self.layer_params      # List of layer parameter lists, in depth order
         # self.layer_bosses      # List of lists of boss rooms in each layer
-        # self.layer_fails       # Array of per-layer fail counts
         # self.doors             # List of Doors,                in creation order
         # self.stairs_up         # List of upward stairways,     in creation order
         # self.stairs_down       # List of downward stairways,   in creation order
@@ -324,11 +328,20 @@ class Dungeon:
         # self.halls_truncated   # Count of hallways shortened
         # self.seed              # The seed used to generate this dungeon given these parameters
         # self.time              # How long it took to generate, in seconds
+        # self.density           # Density metric for the whole dungeon
+        # self.density_preclean  # Density metric before cleaning up hallways
+
+        # self.fails             # Total count of failed attempts to generate a Room, Hall, or Loop somewhere
+        # self.layer_fails       # Array of per-layer fail counts
+        # self.layer_consec_fails# Array of per-layer Current count of consecutive fails
+        # self.layer_max_consec  # Array of per-layer max seen consecutive fails
+        # self.layer_complete    # Array of per-layer boolean indicating whether the density requirement was met
+        # self.stop_condition    # String describing under what condition place generation eventually ceased
 
     def __str__(self):
         s = "\n"
         for l in range(self.d):
-            s += f"Level {l}, Density: {self.layer_areas[l] / ((self.h-1)*(self.w-1)):.2f}\n"
+            s += f"Level {l}, Density: {self.layer_densities[l]:.2f}\n"
             s += self.level_to_string(l)
         return s
 
@@ -551,6 +564,8 @@ class Dungeon:
     def report(self): # TODO: add/change stuff
         return  "-------------D U N G E O N-------------\n" \
             +  f"              Size: {self.w} x {self.h} x {self.d}\n" \
+            +  f"           Density: {self.density}\n" \
+            +  f" Pre-Clean Density: {self.density_preclean}\n" \
             +  f"             Rooms: {len(self.rooms)}\n" \
             +  f"             Halls: {len(self.halls)}\n" \
             +  f"             Doors: {len(self.doors)}\n" \
@@ -560,13 +575,16 @@ class Dungeon:
             +  f"   Inverted Stairs: {len(self.stairs_inverted)}\n" \
             +  f"             Loops: {len(self.loops)}\n" \
             +   "\n" \
-            +  f"         Dead Ends: {self.dead_ends}\n" \
+            +  f"    Dead Ends Kept: {self.dead_ends}\n" \
             +  f" Dead Ends Removed: {self.dead_ends_removed}\n" \
             +  f"   Halls Truncated: {self.halls_truncated}\n" \
             +   "\n" \
-            +  f"             Fails: {self.fails}\n" \
-            +  f" Consecutive Fails: {self.max_consec}\n" \
+            +  f"       Total Fails: {self.fails}\n" \
+            +  f"  Layer Min Consec: {min(self.layer_max_consec):.0f}\n" \
+            +  f"  Layer Max Consec: {max(self.layer_max_consec):.0f}\n" \
+            +  f"    Stop Condition: {self.stop_condition}\n" \
             +   "\n" \
+            +  f"       Story Index: {self.story}\n" \
             +  f"    Time (Seconds): {self.time}\n" \
             +  f"              Seed: {self.seed}\n" \
             +   "---------------------------------------"
@@ -589,6 +607,7 @@ class Dungeon:
         self.places             = [] # Rooms and Halls together, in creation order
         self.layer_places       = [[] for _ in range(self.d)]
         self.layer_areas        = np.zeros(self.d)
+        self.layer_densities    = np.zeros(self.d)
         self.layer_params       = [[0, 0, 0, 0, 0, False, 0] for _ in range(self.d)]
         self.layer_bosses       = [[] for _ in range(self.d)]
         self.doors              = []
@@ -605,30 +624,24 @@ class Dungeon:
 
         # Failsafe setup
         self.fails              = 0
-        self.consec_fails       = 0
-        self.max_consec         = 0
         self.layer_fails        = np.zeros(self.d)
         self.layer_consec_fails = np.zeros(self.d)
         self.layer_max_consec   = np.zeros(self.d)
-        
+        self.layer_complete     = np.zeros(self.d, dtype=np.bool) # Whether or not each layer has met the target density, even if removing halls after reduced that density.
+        self.stop_condition     = "Not Yet Generated"
+
         # Helper functions for fail tracking
         def increment_fails(layer):
             self.fails += 1
-            self.consec_fails += 1
-            self.max_consec = max(self.max_consec, self.consec_fails)
-
             self.layer_fails[layer] += 1
             self.layer_consec_fails[layer] += 1
             self.layer_max_consec[layer] = max(self.layer_max_consec[layer], self.layer_consec_fails[layer])
 
         def reset_consec_fails(layer):
-            self.consec_fails = 0
             self.layer_consec_fails[layer] = 0
 
         # Non-member variables
-        orderly_hall_start      = round(2 * self.w * self.h / self.MAX_HALL**2)
         branching_weights       = [] # Branching weight for each place in places. Correct up until we start removing hallways after completing the main while loop
-        layer_complete          = np.zeros(self.d)
 
         # INDIVIDUAL LAYER PARAMETER CALCULATIONS
         # Do some precalculations
@@ -662,34 +675,20 @@ class Dungeon:
             self.layer_params[l][PARAM_LOOP_RATIO       ] = uniform(self.LOOP_RATIO-loop_radius, self.LOOP_RATIO+loop_radius)
             self.layer_params[l][PARAM_ORDERLINESS      ] = uniform(self.TOP_ORDERLINESS, self.BOTTOM_ORDERLINESS) if orderliness is None else orderliness[l] 
 
-
-        # DUNGEON PLACES GENERATION LOOP
-        # Iterate down the dungeon
-        # TODO: fix end conditions to work with density instead, keep track of local density, and local fails, and layers/places that haven't failed out?
-        # Stop only once the bottom layers fill up enough
-        # while len(self.layer_places[self.d-1]) < 5 and self.consec_fails < 15:
-        # while not np.all(layer_complete) or 
-        while ((not self.places or self.places[-1].z != self.d-1) and self.consec_fails < self.CONSEC_FAILS) \
-                or self.consec_fails < self.CONSEC_FAILS or len(self.layer_places[self.d-1]) < 5 \
-                and self.consec_fails < self.MAX_CONSEC_FAILS and self.fails < self.MAX_FAILS:
-            # Find a Room or Hall to focus on
-            if self.MAX_BACKTRACK is None:
-                place = choices(self.places, weights=branching_weights)[0] if self.places else None
-            else:
-                backtrack = min(len(self.places), self.MAX_BACKTRACK+1)
-                place = choices(self.places[-backtrack:], weights=branching_weights[-backtrack:])[0] if self.places else None
-
+        # SETUP PLACE GENERATION
+        def generate_place_from(place, adjacent=False):
+            "Attempt to generate a new place off from the place given."
             # Decide whether to build down or adjacent.
             if not place:
                 # Make the first room or hall of the dungeon - it always begins with a stair
                 x, y, z = randint(1, self.w-2), randint(1, self.h-2), 0
                 stair = 1
-            elif (random() < self.layer_params[place.z][PARAM_UP_STAIR_RATIO]) and place.z != 0:
+            elif not adjacent and (random() < self.layer_params[place.z][PARAM_UP_STAIR_RATIO]) and place.z != 0:
                 # Up
                 z = place.z - 1
                 x, y = randint(place.x+1, place.x+place.w-2), randint(place.y+1, place.y+place.h-2)
                 stair = -1 # Also counts as true
-            elif (self.consec_fails > self.CONSEC_FAILS/2 or random() < self.layer_params[place.z][PARAM_DOWN_STAIR_RATIO]) and place.z != self.d-1: # TODO: check if shouldn't be based on consec_fails
+            elif place.z != self.d-1 and (((self.layer_max_consec[place.z] >= self.MAX_CONSEC_FAILS//2 or self.layer_densities[place.z] >= self.DENSITY) and not self.layer_places[place.z+1]) or (not adjacent and random() < self.layer_params[place.z][PARAM_DOWN_STAIR_RATIO])):
                 # Down
                 z = place.z + 1
                 x, y = randint(place.x+1, place.x+place.w-2), randint(place.y+1, place.y+place.h-2)
@@ -697,8 +696,8 @@ class Dungeon:
             else:
                 # Adjacent
                 z = place.z
-                layer_fails_half = self.layer_fails[z] >= self.CONSEC_FAILS//2 # For orderliness, halls generate more before this is true, and rooms more after
-                if not place.room and random() < self.layer_params[z][PARAM_ORDERLINESS] and not layer_fails_half: # Orderliness Modifier
+                try_hall_end = self.layer_fails[z] <= self.HALL_END_TRIES
+                if not place.room and random() < self.layer_params[z][PARAM_ORDERLINESS] and try_hall_end: # Orderliness Modifier, tries to generate things at the ends of halls before other places, initially.
                     borders = self.borders(place, borders=[(place.x, place.y+1), (place.x+1, place.y),
                         (place.x+place.w-2, place.y), (place.x+place.w-1, place.y+1),
                         (place.x, place.y+place.h-2), (place.x+1, place.y+place.h-1),
@@ -706,10 +705,13 @@ class Dungeon:
                 else: borders = self.borders(place)
                 if not borders: # Empty borders list should be very rare, but possible
                     increment_fails(z)
-                    continue
+                    return
                 x, y = choice(borders)
                 stair = 0
-            orderly = self.layer_params[z][PARAM_ORDERLINESS]
+            if self.layer_complete[z] or self.layer_max_consec[z] >= self.MAX_CONSEC_FAILS:
+                increment_fails(z)
+                return
+            orderliness = self.layer_params[z][PARAM_ORDERLINESS]
 
             # Boss Room stuff
             if self.layer_params[z][PARAM_BOSS_ROOM] and len(self.layer_places[z]) >= self.BOSS_ROOM_DELAY and (not stair or self.BOSS_ALLOW_STAIR):
@@ -721,16 +723,16 @@ class Dungeon:
 
             # Attempt to build in the place found and decide on Room or Hallway
             pid = len(self.places)
-            allow_shrink = random() >= orderly # Orderliness Modifier # TODO: revisit this for rooms?
-            if boss or (not place and bool(self.ROOM_RATIO)) or ((random()**((not stair and layer_fails_half) + 1) < self.layer_params[z][PARAM_ROOM_RATIO]) and (
-                    len(self.layer_places[z]) > orderly_hall_start or random() >= orderly)): # Orderliness Modifier
+            allow_shrink = random() >= orderliness # Orderliness Modifier # TODO: revisit this for rooms?
+            if boss or (not place and bool(self.ROOM_RATIO)) or ((random()**((not stair and not try_hall_end) + 1) < self.layer_params[z][PARAM_ROOM_RATIO]) and (
+                    len(self.layer_places[z]) > self.HALL_HEADSTART or random() >= orderliness)): # Orderliness Modifier; halls generate more during the headstart, and rooms more after
                 # Room generation
                 new_place = Room.place(self, pid, x, y, z, place, stair=stair, boss=boss, allow_shrink=allow_shrink)
                 room = True
             else:
                 # Hallway generation
                 if place and not place.room and not stair and place.orientation != PIT and \
-                        random() < orderly and not layer_fails_half: # Orderliness Modifier
+                        random() < orderliness and try_hall_end: # Orderliness Modifier
                     new_place = Hallway.place(self, pid, x, y, z, place, orientation=not place.orientation, stair=stair, allow_shrink=allow_shrink)
                 else:
                     new_place = Hallway.place(self, pid, x, y, z, place, stair=stair, allow_shrink=allow_shrink)
@@ -751,17 +753,42 @@ class Dungeon:
                     branching_weights.append(self.HALL_BRANCH_WEIGHT)
                 self.layer_places[z].append(new_place)
                 self.layer_areas[z] += Dungeon.area_of(new_place)
+                self.layer_densities[z] = self.layer_areas[z] / ((self.h-1)*(self.w-1))
+                if self.layer_densities[z] >= self.DENSITY: self.layer_complete[z] = True
                 if new_place.boss: self.layer_bosses[z].append(new_place)
                 if stair == -1: self.stairs_inverted.append(new_place)
             elif place and not stair and random() < self.layer_params[z][PARAM_LOOP_RATIO]: # TODO: adjust how ratio is counted, because it is highly dependent on fails.
                 # We failed to build the place, so try making a loop
                 other_place = self.find_at(x, y, z, ignore=[place], allow_corners=False, check_borders=True, first_only=True) if place else None
                 if other_place and (other_place not in (place.children + [place.parent] + [l[1] for l in place.loops])):
+                    reset_consec_fails(z)
                     place.loops.append(((z, y, x), other_place))
                     other_place.loops.append(((z, y, x), place))
                     self.loops.append(((z, y, x), place, other_place))
                 else: increment_fails(z) # Failed to build place or loop to place
             else: increment_fails(z)
+
+        # DUNGEON PLACE GENERATION LOOPS
+        # Iterate down the dungeon
+        if self.MAX_BACKTRACK is not None:
+            backtrack = min(len(self.places), self.MAX_BACKTRACK+1)
+            places_z = [p.z for p in self.places[-backtrack:]]
+            while ((not places_z) or (not self.layer_complete.all() and not np.all(self.layer_max_consec[places_z] >= self.MAX_CONSEC_FAILS))) and self.fails < self.MAX_FAILS:
+                # Find a Room or Hall to focus on and generate from it
+                parent = choices(self.places[-backtrack:], weights=branching_weights[-backtrack:])[0] if self.places else None
+                generate_place_from(parent)
+                backtrack = min(len(self.places), self.MAX_BACKTRACK+1)
+                places_z = [p.z for p in self.places[-backtrack:]]
+        if self.MAX_BACKTRACK is None or self.OVERRIDE_BACKTRACK: # Continue here, in case there are layers we want to override backtrack to get to
+            while not self.layer_complete.all() and not np.all(self.layer_max_consec >= self.MAX_CONSEC_FAILS) and self.fails < self.MAX_FAILS:
+                # Find a Room or Hall to focus on and generate from it
+                parent = choices(self.places, weights=branching_weights)[0] if self.places else None # *[.1+self.DENSITY-self.layer_densities[p.z] for p in self.places]
+                generate_place_from(parent)
+        self.stop_condition = "Density Met" if np.all(self.layer_complete) \
+            else "Total Fails" if self.fails >= self.MAX_FAILS \
+            else "All Layers Consec Fails" if np.all(self.layer_max_consec >= self.MAX_CONSEC_FAILS) \
+            else "Backtrackable Layers Consec Fails"
+        self.density_preclean = np.mean(self.layer_densities) # NOTE: for Density, we use an average of averages. In this case, since each layer is the same size, this is not incorrect.
 
         # CLEAN UP
         # Clean up boss layer misses
@@ -783,10 +810,11 @@ class Dungeon:
                     self.places[h.pid] = None
                     self.layer_places[h.z].remove(h)
                     self.layer_areas[h.z] -= Dungeon.area_of(h)
+                    self.layer_densities[h.z] = self.layer_areas[h.z] / ((self.h-1)*(self.w-1))
                     h.parent.children.remove(h)
                     if h is self.root: self.root = None # Edge case
                     del(h)
-            elif self.TRUNCATE_HALLS == True or (self.TRUNCATE_HALLS == None and cull):
+            elif self.TRUNCATE_HALLS == True or (self.TRUNCATE_HALLS == None and cull): # BUG: hall truncation not always working?
                 # Hall with too-long ends we're going to shorten
                 changed = False
                 if h.orientation == UD: # Vertical Hall
@@ -815,6 +843,7 @@ class Dungeon:
                     h.area = h.length-2
                     h.perimeter_area = 2*h.length + 2*(self.HALL_BREADTH) - 4
                     self.layer_areas[h.z] -= area-Dungeon.area_of(h)
+                    self.layer_densities[h.z] = self.layer_areas[h.z] / ((self.h-1)*(self.w-1))
                     self.write(h, write_space=True, only_overwrite_symbol=SOLID) # ''
                     self.halls_truncated += 1
             if dead and not remove:
@@ -824,6 +853,7 @@ class Dungeon:
         self.halls  = list(filter(f, self.halls ))
         self.places = list(filter(f, self.places))
         for i, p in enumerate(self.places): p.pid = i # Update the PID's
+        self.density = np.mean(self.layer_densities) # NOTE: See self.density_preclean code for note on average of averages.
 
         # DRAW DOORS, GENERATE LOCKS
         room_index = -1
@@ -894,7 +924,7 @@ class Dungeon:
         #   But, you can also replace recipe params.
 
         # In case the user wants to overwrite recipe params, not just add to them, this lets them do it:
-        use_recipe = Dungeon.RECIPES[recipe]
+        use_recipe = Dungeon.RECIPES[recipe].copy()
         for key in kwargs:
             use_recipe[key] = kwargs[key]
 
@@ -911,7 +941,6 @@ class Dungeon:
             "boss_layer_ratio"  : 0,
             "boss_layer_rooms"  : 1,
             "loop_ratio"        : 0,
-            # TODO: "consec_fails"      : 100,
         },
 
         "medium" : { # Default Medium Settings
@@ -920,6 +949,18 @@ class Dungeon:
 
         "hard" : { # Default Hard Settings
 
+        },
+
+        "huge" : { # An Enormous Dungeon
+            "w"                 : TERM_W,
+            "h"                 : TERM_H*2,
+            "d"                 : 30,
+            "max_hall"          : 28,
+            "boss_layer_rooms"  : 3,
+            "boss_room_delay"   : 40,
+            "max_backtrack"     : 40,
+            "max_key_backtrack" : 20,
+            "loop_ratio"        : .01,
         },
 
         "no_halls" : { # Extreme Test
@@ -934,12 +975,15 @@ class Dungeon:
             "w"                 : TERM_W,
             "h"                 : TERM_H*2,
             "d"                 : 1,
+            "max_hall"          : 28,
             "boss_layer_ratio"  : 0,
             "boss_layer_rooms"  : 1,
             "boss_room_delay"   : 40,
             "max_backtrack"     : None,
             "max_key_backtrack" : None,
-            # TODO: Modify fails if not auto calculated
+            "loop_ratio"        : .01,
+            "bottom_orderliness": 1,
+            "density"           : FULL_DENSITY,
         },
 
         "convoluted" : { # High branching and more up-stairs
@@ -967,6 +1011,7 @@ class Dungeon:
             "max_backtrack"     : 0,
             "locked_ratio"      : 0,
             "loop_ratio"        : 0,
+            "override_backtrack": False,
             # TODO: "consec_fails"      : 100,
         },
 
