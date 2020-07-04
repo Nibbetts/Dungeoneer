@@ -12,11 +12,13 @@ from stories import COUNT as STORY_COUNT
 # Enumerations
 LR, UD, PIT = 0, 1, 2 # Hallway orientations
 PARAM_ROOM_RATIO, PARAM_LOCKED_RATIO, PARAM_DOWN_STAIR_RATIO, PARAM_UP_STAIR_RATIO, PARAM_LOOP_RATIO, PARAM_BOSS_ROOM, PARAM_ORDERLINESS = 0, 1, 2, 3, 4, 5, 6 # Layer parameter indices
+ORDER_FADE, ORDER_SKEW, ORDER_THIRDS, ORDER_JITTER, ORDER_RANDOM, ORDER_CONSTANT = "fade", "skew", "thirds", "jitter", "random", "constant"
+# TODO: use above
 
 # Size Defaults and Param Constants
 TERM_W, TERM_H = 80, 24 # Standard terminal width and height
 HALL_BREADTH = 1        # Can't change this without bugs
-FULL_DENSITY = .83
+FULL_DENSITY = .8
 # From observation, it seems most layers that look full fall inexplicably very close to 83% density,
 #   and we should not expect any more than this as the remainder will often be spaces too small to use.
 
@@ -50,6 +52,7 @@ GRID       = "─┼"
 - Flashlight is directional, lantern fills room or hall
 # TODO: Lock doors leading from a boss room, and place key in boss room. Lock door into boss room?
 """
+
 
 class Place(ABC):
     """ This is an abstract base class for Rooms and Hallways,
@@ -111,7 +114,7 @@ class Room(Place):
             if L < 1 or R < 1 or stair: return None
 
         # Randomly decrease the size
-        if allow_shrink or met_bound != 2: # Slightly lessens the largeness of rooms resulting from orderliness parameter being high
+        if allow_shrink or met_bound != 2: # Slightly lessens the largeness of rooms resulting from orderliness parameter being high # TODO: revisit this. separate lr and ud?
             area = (w-2) * (h-2) # initial inner area
             w_hat = min(w, randint(MIN, MAX))
             h_hat = min(h, randint(MIN, MAX))
@@ -207,17 +210,17 @@ class Dungeon:
             w=TERM_W//2,  h=TERM_H,  d=10, # W/2 since using 2 chars per square
             min_room=None,        max_room=8,
             min_hall=3,           max_hall=18,          hall_breadth=1,
-            boss_min_room=8,      boss_max_room=20,     boss_min_area=170,
+            boss_min_room=8,      boss_max_room=20,     boss_min_area=170, # TODO: switch boss room area to a None and default
             boss_bottom=True,     boss_after_layer=3,   boss_layer_rooms=None,
             boss_layer_ratio=.2,  boss_room_delay=0,    boss_layer_count=None,
             boss_allow_stair=False,
             max_backtrack=20,     max_key_backtrack=10,
             density=.75,          override_backtrack=True,
-            locked_ratio=.25,     down_stair_ratio=.05, up_stair_ratio=.1,
+            locked_ratio=.25,     down_stair_ratio=.03, up_stair_ratio=.1,
             room_ratio=.5,        loop_ratio=.1,        vary_room_ratio=True,
             boss_branch_weight=6, room_branch_weight=1, hall_branch_weight=2,
-            hall_doors=False,     hall_locks=False,     #loop_locks=True,
-            top_orderliness=1,    bottom_orderliness=0, fade_orderliness=True,
+            hall_doors=False,     hall_locks=False,
+            orderliness=.5,       orderliness_scheme=None,
             allow_dead_ends=None, truncate_halls=None,
             hall_headstart=None,  hall_end_tries=None,
             max_consec_fails=200, max_fails=None,
@@ -234,13 +237,14 @@ class Dungeon:
                 or density > 1 or density < 0 \
                 or locked_ratio < 0 or locked_ratio > 1 or down_stair_ratio < 0 or down_stair_ratio > 1 or up_stair_ratio < 0 or up_stair_ratio > 1 \
                 or room_ratio < 0 or room_ratio > 1 or loop_ratio < 0 or loop_ratio > 1 \
-                or top_orderliness > 1 or top_orderliness < 0 or bottom_orderliness > 1 or bottom_orderliness < 0 \
-                or (hall_headstart and hall_headstart < 0) \
+                or (hall_headstart and hall_headstart < 0) or (hall_end_tries and hall_end_tries < 0) \
+                or (orderliness and (orderliness < 0 or orderliness > 1)) \
+                or orderliness_scheme not in [None, ORDER_FADE, ORDER_SKEW, ORDER_THIRDS, ORDER_JITTER, ORDER_RANDOM, ORDER_CONSTANT] \
                 or boss_branch_weight < 0 or room_branch_weight < 0 or hall_branch_weight < 0 \
                 or max_consec_fails < 1 or (max_fails and max_fails < 1):
             raise(ValueError("Invalid value given in Dungeon parameters"))
         if hall_breadth != HALL_BREADTH: raise(NotImplementedError("Wider halls not currently implemented"))
-        if density > FULL_DENSITY: print(f"WARNING: density > {FULL_DENSITY} is likely to generate large failure counts and be difficult to reach")
+        if density > FULL_DENSITY: print(f"WARNING: density > {FULL_DENSITY} is likely to generate large failure counts and be difficult to reach without regenerating several dungeons")
 
         # Global Dungeon Proportion Characteristics
         self.w = w # Dungeon Width
@@ -269,7 +273,7 @@ class Dungeon:
         self.MAX_BACKTRACK      = max_backtrack      # How many rooms/halls back we might branch anew. This is not a direct control, but largely influences branching and the likelihood of long independent branches. May be overridden to meet density if override_density is True.
         self.MAX_KEY_BACKTRACK  = max_key_backtrack  # How many rooms (only) back we might place a key from it's door
         self.DENSITY            = density            # May not be met, especially with low fail limits or high down stair ratio or low backtracking unless override_backtrack True, but does stop after this density. NOTE: Density may be reduced again by removing spare halls.
-        self.OVERRIDE_BACKTRACK = override_backtrack # Whether or not to go back and add more on after to layers that aren't dense enough yet, breaking max_backtrack. # TODO: use this
+        self.OVERRIDE_BACKTRACK = override_backtrack # Whether or not to go back and add more on after to layers that aren't dense enough yet, breaking max_backtrack.
         self.VARY_ROOM_RATIO    = vary_room_ratio    # Use a varied trimodal distribution for room/hall ratios (Turn off to get all layers to match ratios)
         self.BOSS_BRANCH_WEIGHT = boss_branch_weight # How boss rooms are comparatively weighted when deciding which recent place to randomly branch off of; higher numbers compared to other branching weights make it more likely.
         self.ROOM_BRANCH_WEIGHT = room_branch_weight # ''  other rooms ''
@@ -285,18 +289,20 @@ class Dungeon:
         self.LOOP_RATIO         = loop_ratio         # Likelihood of creating a loop when the option is found
 
         # Orderliness
-        self.TOP_ORDERLINESS    = top_orderliness    # Generally how organized rooms and hallways are at most, or at the top of the dungeon if FADE_ORDERLINESS.
-        self.BOTTOM_ORDERLINESS = bottom_orderliness # Minimum orderliness, or orderliness at the bottom of the dungeon if FADE_ORDERLINESS.
-        self.FADE_ORDERLINESS   = fade_orderliness   # If True, order will change in a gradient from top to bottom of dungeon. If false, will pick a random value between top and bottom for each layer.
+        self.ORDERLINESS        = orderliness        # Generally how organized rooms and hallways are. Used for centering the ranges or if orderliness_scheme is "constant"
+        self.ORDERLINESS_SCHEME = orderliness_scheme if orderliness_scheme else choice([ORDER_FADE, ORDER_SKEW, ORDER_JITTER, ORDER_THIRDS]) # Scheme to use for orderliness. "fade" for a smooth gradient, "skew" for a sigmoid-based gradient, "random" for random, "thirds" for three striations of the dungeon, "jitter" for a fade, but with random local variation, or "constant" to use the previous parameter exactly on every layer. None will pick a cool one at random.
         self.ALLOW_DEAD_ENDS    = allow_dead_ends    # If True, none are removed; if False, all are removed; if None, follows orderliness based probability.
         self.TRUNCATE_HALLS     = truncate_halls     # If True, all are shortened; if False, none are; if None, follows orderliness based probability. NOTE: Truncating halls can result in halls shorter than min_hall.
         self.HALL_HEADSTART     = hall_headstart if hall_headstart else round(2*w*h / self.MAX_HALL**2) # How many halls we'll try to generate, when being orderly, before other things on a level. Use None for an automatically estimated useful number.
         self.HALL_END_TRIES     = hall_end_tries if hall_end_tries else 3*self.HALL_HEADSTART # How many tries we get to generate things at the ends of halls, when being orderly, before off of other parts of halls on a level. Use None for an automatically estimated useful number.
+        # TODO: make the above two things not dependent on orderliness if not None? Or just reduce the other things...
+        # TODO: maybe combine dead ends and truncation params into one? 
+        # TODO: separate out the long hall/room fill param?
+        # TODO: break orderliness into 3 stages instead of smooth transition? Right now useless when not fade_orderliness
 
         # Procedural Generation Boundaries           # NOTE: fail count limits affect the attainability of the desired density.
         self.MAX_CONSEC_FAILS   = max_consec_fails   # Hard limit on consecutive fails per layer before stopping the generator. Estimations ~200 for common parameter sets, so no smart calculator, but odd configurations may require more.
-        self.MAX_FAILS          = max_fails if max_fails else round(w*h*d/3) # Hard limit on total fails before stopping the generator. Use None for a smart estimation based on dungeon size.
-        # TODO: replace fails limits with NONE default and a calculation based on dungeon volume?
+        self.MAX_FAILS          = max_fails if max_fails else round(w*h*d*density) # Hard limit on total fails before stopping the generator. Use None for a smart estimation based on dungeon size. # TODO: adjust for density requirements!
         
         # Aesthetics
         self.HIGHLIGHT_BORDERS  = highlight_borders  # Whether or not to draw borders around the rooms
@@ -574,6 +580,8 @@ class Dungeon:
             +  f"            Stairs: {len(self.stairs_up)}\n" \
             +  f"   Inverted Stairs: {len(self.stairs_inverted)}\n" \
             +  f"             Loops: {len(self.loops)}\n" \
+            +  f"       Boss Layers: {sum([s[PARAM_BOSS_ROOM] for s in self.layer_params])}\n" \
+            +  f"        Boss Rooms: {len([r for r in self.rooms if r.boss])}\n" \
             +   "\n" \
             +  f"    Dead Ends Kept: {self.dead_ends}\n" \
             +  f" Dead Ends Removed: {self.dead_ends_removed}\n" \
@@ -649,13 +657,46 @@ class Dungeon:
         up_radius     = min(self.UP_STAIR_RATIO, 1-self.UP_STAIR_RATIO) if self.d > 1 else 0
         down_radius   = min(self.DOWN_STAIR_RATIO, 1-self.DOWN_STAIR_RATIO) if self.d > 1 else 0
         loop_radius   = min(self.LOOP_RATIO, 1-self.LOOP_RATIO) if self.d > 1 else 0
-        orderliness   = np.linspace(self.TOP_ORDERLINESS, self.BOTTOM_ORDERLINESS, self.d) if self.FADE_ORDERLINESS and self.d > 1 else None
+        room_radius   = min(self.ROOM_RATIO, 1-self.ROOM_RATIO) if self.d > 1 else 0
+        order_radius  = min(self.ORDERLINESS, 1-self.ORDERLINESS)
+
+        # Orderliness
+        order_scheme  = np.ones(self.d)*self.ORDERLINESS if self.ORDERLINESS_SCHEME == ORDER_CONSTANT \
+            else np.random.uniform(0, 1, size=self.d) if self.ORDERLINESS_SCHEME == ORDER_RANDOM \
+            else np.linspace(self.ORDERLINESS+order_radius, self.ORDERLINESS-order_radius, self.d) if self.d > 1 else self.ORDERLINESS
+        if self.ORDERLINESS_SCHEME == ORDER_THIRDS and self.d > 1:
+            divU, divD = self.ORDERLINESS*4/3, self.ORDERLINESS*2/3
+            order_scheme[np.logical_and(divD <= order_scheme, order_scheme <= divU)] = self.ORDERLINESS
+            order_scheme[order_scheme > divU] = 1
+            order_scheme[order_scheme < divD] = 0
+        if self.ORDERLINESS_SCHEME == ORDER_SKEW:
+            skew_fade = lambda x: 1 / (1 + np.exp((.5-x)*15))
+            order_scheme = skew_fade(order_scheme)
+        if self.ORDERLINESS_SCHEME == ORDER_JITTER:
+            for l in range(self.d):
+                r = min(order_scheme[l], 1-order_scheme[l])
+                order_scheme[l] = uniform(order_scheme[l]-r, order_scheme[l]+r)
+
+        def layer_room_ratio(layer, boss):
+            """ Helper function to find room ratio for a layer."""
+            if boss or self.d==1 or not self.VARY_ROOM_RATIO:
+                return self.ROOM_RATIO
+            else:
+                return uniform(self.ROOM_RATIO-room_radius, self.ROOM_RATIO+room_radius)
+            # ratio = uniform(self.ROOM_RATIO-room_radius, self.ROOM_RATIO+room_radius)
+            # if random() > self.layer_params[layer][PARAM_ORDERLINESS]:
+            #     return choices([.97, random(), ratio, .03], [self.ROOM_RATIO, 2, 2, 1-self.ROOM_RATIO])[0]
+            # return ratio # TODO: ?
+
+        # BUG: d = Dungeon.new(room_ratio=0, truncate_halls=True, allow_dead_ends=True, down_stair_ratio=.1, up_stair_ratio=.1, boss_layer_count=0, boss_bottom=0, seed=15928713638279554); print(d) # NO UPSTAIR AT TOP!
+
         # Make Boss Layer List
         if self.BOSS_LAYER_COUNT is not None:
-            boss_layers = sample(list(range(self.BOSS_AFTER_LAYER, self.d-self.BOSS_BOTTOM)), self.BOSS_LAYER_COUNT-self.BOSS_BOTTOM)
+            boss_layers = sample(list(range(self.BOSS_AFTER_LAYER, self.d-self.BOSS_BOTTOM)), self.BOSS_LAYER_COUNT-self.BOSS_BOTTOM) if self.BOSS_LAYER_COUNT else []
             if self.BOSS_BOTTOM: boss_layers.append(self.d-1)
             for l in boss_layers:
                 self.layer_params[l][PARAM_BOSS_ROOM    ] = True
+
         # Iterate over layers to set individual layer parameters
         for l in range(self.d):
             # Boss Layer Stuff
@@ -666,14 +707,12 @@ class Dungeon:
                 self.layer_params[l][PARAM_BOSS_ROOM    ] = boss
             else: boss = self.layer_params[l][PARAM_BOSS_ROOM]
             # Everything else
-            self.layer_params[l][PARAM_ROOM_RATIO       ] = self.ROOM_RATIO if (boss or self.d==1 or not self.VARY_ROOM_RATIO) \
-                                                            else random() # TODO: revisit this.
-                                                            # else choice([.97, self.ROOM_RATIO, self.ROOM_RATIO, .03]) if (random() < .0) \
+            self.layer_params[l][PARAM_ORDERLINESS      ] = order_scheme[l] 
+            self.layer_params[l][PARAM_ROOM_RATIO       ] = layer_room_ratio(l, boss)
             self.layer_params[l][PARAM_LOCKED_RATIO     ] = uniform(self.LOCKED_RATIO-locked_radius, self.LOCKED_RATIO+locked_radius)
             self.layer_params[l][PARAM_DOWN_STAIR_RATIO ] = uniform(self.DOWN_STAIR_RATIO-down_radius, self.DOWN_STAIR_RATIO+down_radius)
             self.layer_params[l][PARAM_UP_STAIR_RATIO   ] = uniform(self.UP_STAIR_RATIO-up_radius, self.UP_STAIR_RATIO+up_radius)
             self.layer_params[l][PARAM_LOOP_RATIO       ] = uniform(self.LOOP_RATIO-loop_radius, self.LOOP_RATIO+loop_radius)
-            self.layer_params[l][PARAM_ORDERLINESS      ] = uniform(self.TOP_ORDERLINESS, self.BOTTOM_ORDERLINESS) if orderliness is None else orderliness[l] 
 
         # SETUP PLACE GENERATION
         def generate_place_from(place, adjacent=False):
@@ -732,7 +771,7 @@ class Dungeon:
             else:
                 # Hallway generation
                 if place and not place.room and not stair and place.orientation != PIT and \
-                        random() < orderliness and try_hall_end: # Orderliness Modifier
+                        random() < orderliness and try_hall_end: # Orderliness Modifier # TODO: revisit this
                     new_place = Hallway.place(self, pid, x, y, z, place, orientation=not place.orientation, stair=stair, allow_shrink=allow_shrink)
                 else:
                     new_place = Hallway.place(self, pid, x, y, z, place, stair=stair, allow_shrink=allow_shrink)
@@ -770,7 +809,8 @@ class Dungeon:
 
         # DUNGEON PLACE GENERATION LOOPS
         # Iterate down the dungeon
-        if self.MAX_BACKTRACK is not None:
+        finite_backtrack = self.MAX_BACKTRACK is not None
+        if finite_backtrack:
             backtrack = min(len(self.places), self.MAX_BACKTRACK+1)
             places_z = [p.z for p in self.places[-backtrack:]]
             while ((not places_z) or (not self.layer_complete.all() and not np.all(self.layer_max_consec[places_z] >= self.MAX_CONSEC_FAILS))) and self.fails < self.MAX_FAILS:
@@ -779,12 +819,13 @@ class Dungeon:
                 generate_place_from(parent)
                 backtrack = min(len(self.places), self.MAX_BACKTRACK+1)
                 places_z = [p.z for p in self.places[-backtrack:]]
-        if self.MAX_BACKTRACK is None or self.OVERRIDE_BACKTRACK: # Continue here, in case there are layers we want to override backtrack to get to
+        # TODO: Need to make it so locked doors placed after have keys closer than the bottom of the dungeon...
+        if not finite_backtrack or self.OVERRIDE_BACKTRACK: # Continue here, in case there are layers we want to override backtrack to get to
             while not self.layer_complete.all() and not np.all(self.layer_max_consec >= self.MAX_CONSEC_FAILS) and self.fails < self.MAX_FAILS:
                 # Find a Room or Hall to focus on and generate from it
                 parent = choices(self.places, weights=branching_weights)[0] if self.places else None # *[.1+self.DENSITY-self.layer_densities[p.z] for p in self.places]
-                generate_place_from(parent)
-        self.stop_condition = "Density Met" if np.all(self.layer_complete) \
+                generate_place_from(parent)#, adjacent=finite_backtrack) # Seems to slow it down, actually, without seeming to decrease the number of stairs.
+        self.stop_condition = "Layers Density Met" if np.all(self.layer_complete) \
             else "Total Fails" if self.fails >= self.MAX_FAILS \
             else "All Layers Consec Fails" if np.all(self.layer_max_consec >= self.MAX_CONSEC_FAILS) \
             else "Backtrackable Layers Consec Fails"
@@ -814,7 +855,7 @@ class Dungeon:
                     h.parent.children.remove(h)
                     if h is self.root: self.root = None # Edge case
                     del(h)
-            elif self.TRUNCATE_HALLS == True or (self.TRUNCATE_HALLS == None and cull): # BUG: hall truncation not always working?
+            elif self.TRUNCATE_HALLS == True or (self.TRUNCATE_HALLS == None and cull):
                 # Hall with too-long ends we're going to shorten
                 changed = False
                 if h.orientation == UD: # Vertical Hall
@@ -919,9 +960,10 @@ class Dungeon:
         if report: print(self.report() + "   ", end="\r")
 
     @staticmethod
-    def new(recipe="default", **kwargs):
+    def new(recipe="default", **kwargs): # TODO: Combine with init function
         # NOTE: Common kwargs to add: report, seed, highlight_borders, w, h, d.
         #   But, you can also replace recipe params.
+        # ALSO make it so it can take multiple recipes?
 
         # In case the user wants to overwrite recipe params, not just add to them, this lets them do it:
         use_recipe = Dungeon.RECIPES[recipe].copy()
@@ -961,6 +1003,49 @@ class Dungeon:
             "max_backtrack"     : 40,
             "max_key_backtrack" : 20,
             "loop_ratio"        : .01,
+        },
+
+        "tiny" : {
+            "w"                 : 20, 
+            "h"                 : 12, 
+            "d"                 : 5, 
+            "min_room"          : 2, 
+            "max_room"          : 4, 
+            "min_hall"          : 2, 
+            "max_hall"          : 9, 
+            "boss_min_room"     : 4, 
+            "boss_max_room"     : 10, 
+            "boss_min_area"     : 50, 
+            "boss_layer_count"  : 1, 
+            "max_backtrack"     : 15, 
+            "loop_ratio"        : .01,
+            "locked_ratio"      : .5, 
+            "bottom_orderliness": 1, 
+            "room_ratio"        : .9, 
+            "density"           : .9, 
+            "hall_headstart"    : 2
+        },
+
+        "square" : {
+
+        },
+
+        "tiny_square" : {
+            # TODO? or just from combination?
+            "w"                 : 20, 
+            "h"                 : 20, 
+            "d"                 : 5, 
+            "min_room"          : 2, 
+            "max_room"          : 4, 
+            "min_hall"          : 2, 
+            "max_hall"          : 9, 
+            "boss_min_room"     : 4, 
+            "boss_max_room"     : 10, 
+            "boss_min_area"     : 50, 
+            "boss_layer_count"  : 1, 
+            "max_backtrack"     : 15, 
+            "loop_ratio"        : .01,
+            "locked_ratio"      : .3, 
         },
 
         "no_halls" : { # Extreme Test
