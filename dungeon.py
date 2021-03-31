@@ -3,6 +3,7 @@ from random import randint, choice, random, uniform, sample, choices
 from random import seed as seedrandom
 from time import time
 from abc import ABC, abstractstaticmethod
+from sys import argv
 # NOTE: randint is inclusive on both ends
 
 from stories import COUNT as STORY_COUNT
@@ -13,7 +14,6 @@ from stories import COUNT as STORY_COUNT
 LR, UD, PIT = 0, 1, 2 # Hallway orientations
 PARAM_ROOM_RATIO, PARAM_LOCKED_RATIO, PARAM_DOWN_STAIR_RATIO, PARAM_UP_STAIR_RATIO, PARAM_LOOP_RATIO, PARAM_BOSS_ROOM, PARAM_ORDERLINESS = 0, 1, 2, 3, 4, 5, 6 # Layer parameter indices
 ORDER_FADE, ORDER_SKEW, ORDER_THIRDS, ORDER_JITTER, ORDER_RANDOM, ORDER_CONSTANT = "fade", "skew", "thirds", "jitter", "random", "constant"
-# TODO: use above
 
 # Size Defaults and Param Constants
 TERM_W, TERM_H = 80, 24 # Standard terminal width and height
@@ -51,6 +51,41 @@ GRID       = "─┼"
 - T for trees above ground?
 - Flashlight is directional, lantern fills room or hall
 # TODO: Lock doors leading from a boss room, and place key in boss room. Lock door into boss room?
+# TODO: hazards, for d&d
+# TODO: stuff, to search through "*"
+
+
+NOTES:
+- Several different parameters often affect each other. For example,
+    - end stair counts are affected by:
+        - down_stair_ratio
+        - up_stair_ratio
+        - loop_ratio (since many loops are extra stairs)
+    - end density is affected by:
+        - density
+        - orderliness (controls truncation & dead ends if not specified, as well as complex structure like hall_headstart and hall_end_tries)
+        - truncate_halls (some halls shortened)
+        - allow_dead_ends (some halls deleted in post-processing)
+        - hall_locks?
+        - max_consec_fails, max_fails
+        - max_backtrack
+        - up_stair_ratio, down_stair_ratio in extreme parameter sets like one_path
+        - several other things perhaps a little
+    - end room / hall ratio is affected by:
+        - room_ratio
+        - various boss room & layer parameters
+        - extreme max_hall & min_hall parameters
+        - orderliness, hall_headstart, allow_dead_ends
+        - hall_locks?
+    - generation end is affected by:
+        - max_consec_fails
+        - max_fails
+        - density
+        - max_backtrack, override_backtrack
+    - boss, room, & hall branch weights are weighted relative to each other
+    - hall_branch_weight and hall_end_tries may affect each other
+    - override_backtrack affects max_backtrack, especially in high density requirements
+    - Probably other confusing inter-dependencies I haven't spotted at the moment
 """
 
 
@@ -262,7 +297,7 @@ class Dungeon:
         self.BOSS_MAX_ROOM      = boss_max_room  + 2 # Max dimension for a boss room
         self.BOSS_MIN_AREA      = boss_min_area      # Minimum inner area of acceptable boss rooms
         self.BOSS_BOTTOM        = boss_bottom        # Force bottom layer to be a boss layer.
-        self.BOSS_AFTER_LAYER   = boss_after_layer   # Won't generate boss rooms till after this many layers, ie, maybe as soon as this layer
+        self.BOSS_AFTER_LAYER   = boss_after_layer   # Won't generate boss rooms till after this many layers, ie, maybe as soon the layer with this index.
         self.BOSS_LAYER_ROOMS   = boss_layer_rooms   # Limit boss room count per layer.
         self.BOSS_LAYER_RATIO   = boss_layer_ratio   # How often a layer is a boss room layer. Not used if boss_layer_count is used. Only applied where not contrary to boss_bottom and boss_after_layer. Superceded by BOSS_BOTTOM.
         self.BOSS_ROOM_DELAY    = boss_room_delay    # How many rooms/halls into a boss layer we'll start trying to make a boss room. Useful for large one-layer maps.
@@ -298,11 +333,10 @@ class Dungeon:
         # TODO: make the above two things not dependent on orderliness if not None? Or just reduce the other things...
         # TODO: maybe combine dead ends and truncation params into one? 
         # TODO: separate out the long hall/room fill param?
-        # TODO: break orderliness into 3 stages instead of smooth transition? Right now useless when not fade_orderliness
 
         # Procedural Generation Boundaries           # NOTE: fail count limits affect the attainability of the desired density.
-        self.MAX_CONSEC_FAILS   = max_consec_fails   # Hard limit on consecutive fails per layer before stopping the generator. Estimations ~200 for common parameter sets, so no smart calculator, but odd configurations may require more.
-        self.MAX_FAILS          = max_fails if max_fails else round(w*h*d*density) # Hard limit on total fails before stopping the generator. Use None for a smart estimation based on dungeon size. # TODO: adjust for density requirements!
+        self.MAX_CONSEC_FAILS   = max_consec_fails   # Hard limit on consecutive fails per layer before stopping the whole generator. Estimations ~200 for common parameter sets, so no smart calculator, but odd configurations may require more.
+        self.MAX_FAILS          = max_fails if max_fails else round(w*h*d*density) # Hard limit on total fails before stopping the generator. Use None for a smart estimation based on dungeon size.
         
         # Aesthetics
         self.HIGHLIGHT_BORDERS  = highlight_borders  # Whether or not to draw borders around the rooms
@@ -663,7 +697,7 @@ class Dungeon:
         # Orderliness
         order_scheme  = np.ones(self.d)*self.ORDERLINESS if self.ORDERLINESS_SCHEME == ORDER_CONSTANT \
             else np.random.uniform(0, 1, size=self.d) if self.ORDERLINESS_SCHEME == ORDER_RANDOM \
-            else np.linspace(self.ORDERLINESS+order_radius, self.ORDERLINESS-order_radius, self.d) if self.d > 1 else self.ORDERLINESS
+            else np.linspace(self.ORDERLINESS+order_radius, self.ORDERLINESS-order_radius, self.d) if self.d > 1 else np.array([self.ORDERLINESS])
         if self.ORDERLINESS_SCHEME == ORDER_THIRDS and self.d > 1:
             divU, divD = self.ORDERLINESS*4/3, self.ORDERLINESS*2/3
             order_scheme[np.logical_and(divD <= order_scheme, order_scheme <= divU)] = self.ORDERLINESS
@@ -763,7 +797,8 @@ class Dungeon:
             # Attempt to build in the place found and decide on Room or Hallway
             pid = len(self.places)
             allow_shrink = random() >= orderliness # Orderliness Modifier # TODO: revisit this for rooms?
-            if boss or (not place and bool(self.ROOM_RATIO)) or ((random()**((not stair and not try_hall_end) + 1) < self.layer_params[z][PARAM_ROOM_RATIO]) and (
+            if boss or (not place and bool(self.ROOM_RATIO)) or (self.ROOM_RATIO == 1) or (
+                    (random()**((not stair and not try_hall_end) + 1) < self.layer_params[z][PARAM_ROOM_RATIO]) and (
                     len(self.layer_places[z]) > self.HALL_HEADSTART or random() >= orderliness)): # Orderliness Modifier; halls generate more during the headstart, and rooms more after
                 # Room generation
                 new_place = Room.place(self, pid, x, y, z, place, stair=stair, boss=boss, allow_shrink=allow_shrink)
@@ -960,37 +995,68 @@ class Dungeon:
         if report: print(self.report() + "   ", end="\r")
 
     @staticmethod
-    def new(recipe="default", **kwargs): # TODO: Combine with init function
+    def new(recipe="medium", *args, **kwargs): # TODO: Combine with init function
         # NOTE: Common kwargs to add: report, seed, highlight_borders, w, h, d.
         #   But, you can also replace recipe params.
         # ALSO make it so it can take multiple recipes?
 
+        # In case no recipe is given
+        if '=' in recipe:
+            use_recipe = Dungeon.RECIPES["medium"].copy()
+            args = (recipe, *args)
+        else:
+            use_recipe = Dungeon.RECIPES[recipe].copy()
+
+        # Random recipe generator
+        if recipe == "random":
+            recipe = choice(list(Dungeon.RECIPES.keys()))
+            print(f"Using recipe: {recipe}")
+            # TODO: Maybe add random generator that acts in place of this half of the time.
+
         # In case the user wants to overwrite recipe params, not just add to them, this lets them do it:
-        use_recipe = Dungeon.RECIPES[recipe].copy()
         for key in kwargs:
             use_recipe[key] = kwargs[key]
+        # In case the user wants to overwrite recipe params when executing as script:
+        for arg in args:
+            if '=' not in arg: raise ValueError(f"Unable to determine intended argument for value {arg}")
+            key, val = arg.split('=')
+            val = val.lower()
+            if '.' in val: val = float(val)
+            elif val == "none": val = None
+            elif val == "true": val = True
+            elif val == "false": val = False
+            else:
+                try:
+                    val = int(val)
+                except:
+                    pass
+            use_recipe[key] = val
 
         return Dungeon(**use_recipe)
 
     RECIPES = {
-        "default" : {}, # TODO: Somewhere between medium and hard?
 
         "easy" : { # Default Easy Settings
+            "d"                 : 5,
             "down_stair_ratio"  : 0,
             "up_stair_ratio"    : 0,
-            "max_backtrack"     : 2,
-            "max_key_backtrack" : 3,
+            "max_backtrack"     : 1,
+            "max_key_backtrack" : 2,
             "boss_layer_ratio"  : 0,
             "boss_layer_rooms"  : 1,
             "loop_ratio"        : 0,
         },
 
-        "medium" : { # Default Medium Settings
-
-        },
+        "medium" : {}, # Default Settings
 
         "hard" : { # Default Hard Settings
-
+            "d"                 : 15,
+            "down_stair_ratio"  : .05,
+            "up_stair_ratio"    : .2,
+            "hall_locks"        : True,
+            "boss_after_layer"  : 2,
+            "locked_ratio"      : .3,
+            "boss_allow_stair"  : True,
         },
 
         "huge" : { # An Enormous Dungeon
@@ -1020,18 +1086,17 @@ class Dungeon:
             "max_backtrack"     : 15, 
             "loop_ratio"        : .01,
             "locked_ratio"      : .5, 
-            "bottom_orderliness": 1, 
+            "orderliness"       : 1, 
             "room_ratio"        : .9, 
             "density"           : .9, 
-            "hall_headstart"    : 2
+            "hall_headstart"    : 2,
         },
 
         "square" : {
-
+            "h"                 : TERM_W // 2,
         },
 
         "tiny_square" : {
-            # TODO? or just from combination?
             "w"                 : 20, 
             "h"                 : 20, 
             "d"                 : 5, 
@@ -1045,18 +1110,40 @@ class Dungeon:
             "boss_layer_count"  : 1, 
             "max_backtrack"     : 15, 
             "loop_ratio"        : .01,
-            "locked_ratio"      : .3, 
+            "locked_ratio"      : .3,
+            "orderliness"       : 1,
+            "room_ratio"        : .75,
         },
 
         "no_halls" : { # Extreme Test
-            "room_ratio"        : 1,
+            "room_ratio"        : 1, # TODO orderliness or something is causing halls to generate
         },
 
         "no_rooms" : { # Extreme Test
             "room_ratio"        : 0,
+            "boss_layer_count"  : 0,
+            "boss_bottom"       : False,
+            "allow_dead_ends"   : True,
         },
 
         "one_layer" : { # Large, one-layer dungeon
+            "w"                 : TERM_W,
+            "h"                 : TERM_H*2,
+            "d"                 : 1,
+            # "max_hall"          : 28,
+            "boss_layer_ratio"  : 0,
+            "boss_layer_rooms"  : 1,
+            "boss_room_delay"   : 40,
+            "max_backtrack"     : None,
+            "max_key_backtrack" : None,
+            "loop_ratio"        : .01,
+            "truncate_halls"    : True,
+            "allow_dead_ends"   : False,
+            "density"           : FULL_DENSITY,
+            "room_ratio"        : .4,
+        },
+
+        "base" : { # Large, organized bunker
             "w"                 : TERM_W,
             "h"                 : TERM_H*2,
             "d"                 : 1,
@@ -1066,60 +1153,142 @@ class Dungeon:
             "boss_room_delay"   : 40,
             "max_backtrack"     : None,
             "max_key_backtrack" : None,
-            "loop_ratio"        : .01,
-            "bottom_orderliness": 1,
             "density"           : FULL_DENSITY,
+            "room_ratio"        : .4,
+            "orderliness"       : 1,
+            "hall_headstart"    : 20,
         },
+
+        # "strip" : { # Very long, one-layer dungeon # TODO: need to make it so I can specify the start location...
+        #     "w"                 : TERM_H,
+        #     "h"                 : 300,
+        #     "d"                 : 1, # TODO: BUG!
+        #     "boss_layer_ratio"  : 0,
+        #     "boss_layer_rooms"  : 3,
+        #     "boss_room_delay"   : 40, # TODO: make it so it waits this long between each?
+        #     "density"           : .9, # TODO: increase consec fails?
+        # },
 
         "convoluted" : { # High branching and more up-stairs
             "max_backtrack"     : None,
             "max_key_backtrack" : None,
             "up_stair_ratio"    : .1,
-            "down_stair_ratio"  : .1,
+            "down_stair_ratio"  : .05,
             "locked_ratio"      : .35,
-            "loop_ratio"        : .1, # ????
-            "top_orderliness"   : 0,
+            "loop_ratio"        : .3,
+            "orderliness"       : 0,
+            "boss_allow_stair"  : True,
         },
 
         "orderly" : { # High orderliness
-            "bottom_orderliness": 1,
+            "orderliness"       : 1,
             "loop_ratio"        : 0,
         },
 
         "maze" : { # Mostly passages, more up-stairs
+            "up_stair_ratio"    : .1,
+            "room_ratio"        : .25,
             "max_backtrack"     : None,
+            "max_key_backtrack" : 30,
+            "loop_ratio"        : 0, # Change a little for harder mazes
+            "orderliness"       : 0,
+            "boss_layer_count"  : 0, # Bottom is still one
+            "boss_layer_rooms"  : 1,
         },
 
         "one_path" : { # Direct route
             "down_stair_ratio"  : 0,
-            "up_stair_ratio"    : 0,
+            "up_stair_ratio"    : 0, # Necessary because of potential entrapment
             "max_backtrack"     : 0,
             "locked_ratio"      : 0,
             "loop_ratio"        : 0,
             "override_backtrack": False,
-            # TODO: "consec_fails"      : 100,
+            "orderliness"       : 0,
+            "max_consec_fails"  : 300,
+            # "truncate_halls"    : True,
         },
 
-        "web" : { # All possible loops
+        "webbed" : { # All possible loops
             "loop_ratio"        : 1,
+            "boss_allow_stair"  : True,
+        },
+
+        "web" : { # All possible loops, no rooms
+            "loop_ratio"        : 1,
+            "room_ratio"        : 0,
+            "boss_layer_count"  : 0,
+            "boss_bottom"       : False,
+            "allow_dead_ends"   : True,
+            "hall_headstart"    : 4,
         },
 
         "sparse" : { # Low density, longer passages
-
+            "min_hall"          : 5,
+            "max_hall"          : 24,
+            "hall_headstart"    : 5,
+            "density"           : .4,
+            "boss_layer_rooms"  : 2,
         },
 
         "dense" : { # High density, shorter passages, smaller rooms
-
+            "min_hall"          : 2,
+            "max_hall"          : 14,
+            "hall_headstart"    : 0,
+            "density"           : .95,
+            "max_consec_fails"  : 400,
+            "max_backtrack"     : 40,
+            "max_fails"         : 20000,
         },
 
-        "random" : { # Randomize the parameters themselves
-        
+        "d&d" : { # Example better suited to Dungeons and Dragons
+            "d"                 : 4,
+            "boss_layer_ratio"  : 0,
+            "density"           : .42,
+            "max_backtrack"     : 4,
+            "truncate_halls"    : True,
+            "boss_layer_rooms"  : 1,
         },
+
+        "goblin" : { # An unorderly Goblin Warren
+            "w"                 : TERM_W,
+            "h"                 : TERM_H*2,
+            "max_hall"          : 12,
+            "density"           : .4,
+            "room_ratio"        : .35,
+            "loop_ratio"        : .8,
+            "allow_dead_ends"   : True,
+            "truncate_halls"    : False,
+            "hall_headstart"    : 0,
+            "boss_layer_rooms"  : 1,
+            "orderliness_scheme": ORDER_RANDOM,
+            "max_backtrack"     : None,
+            "up_stair_ratio"    : .2,
+            "down_stair_ratio"  : .2,
+            "room_branch_weight": 3,
+            "hall_branch_weight": 1,
+            "boss_branch_weight": 8,
+            "boss_allow_stair"  : True,
+        },
+
+        "dwarven" : { # A fairly orderly Dwarven Outpost. This generator isn't designed to do full-on patternized orderliness.
+            "w"                 : 32,
+            "h"                 : 32,
+            "orderliness"       : 1,
+            "density"           : .85,
+            "loop_ratio"        : .5,
+            "max_backtrack"     : 7,
+            "vary_room_ratio"   : False,
+            "up_stair_ratio"    : 0,
+            "down_stair_ratio"  : 0,
+            "boss_branch_weight": 4,
+        },
+
+        "random" : {}, # Randomize the parameters themselves. This is post-processed, since it can't be stored without de-randomizing it.
     }
 
 
 
 # Script behavior - instant dungeon on screen
 if __name__ == "__main__":
-    dungeon = Dungeon()
+    dungeon = Dungeon.new(*argv[1:])
     print('\n', dungeon, sep='')
