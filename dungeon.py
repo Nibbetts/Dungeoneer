@@ -53,6 +53,17 @@ GRID       = "─┼"
 # TODO: Lock doors leading from a boss room, and place key in boss room. Lock door into boss room?
 # TODO: hazards, for d&d
 # TODO: stuff, to search through "*"
+- separate types of level/multilevel maps:
+    - stairs
+    - treasures (includes keys?)
+    - monsters & bosses (not live)
+    - rooms
+    - rooms & halls
+    - stairs, rooms, halls
+    - all of the above
+    - magic mirror (item; live, see around corners)
+    - magic pool (live, one level)
+    - crystal ball (live, everywhere)
 
 
 NOTES:
@@ -1000,18 +1011,18 @@ class Dungeon:
         #   But, you can also replace recipe params.
         # ALSO make it so it can take multiple recipes?
 
+        # Random recipe generator
+        if recipe == "random":
+            recipe = choice(list(Dungeon.RECIPES.keys()))
+            print(f"Using recipe: {recipe}")
+            # TODO: Maybe add random generator that acts in place of this half of the time.
+
         # In case no recipe is given
         if '=' in recipe:
             use_recipe = Dungeon.RECIPES["medium"].copy()
             args = (recipe, *args)
         else:
             use_recipe = Dungeon.RECIPES[recipe].copy()
-
-        # Random recipe generator
-        if recipe == "random":
-            recipe = choice(list(Dungeon.RECIPES.keys()))
-            print(f"Using recipe: {recipe}")
-            # TODO: Maybe add random generator that acts in place of this half of the time.
 
         # In case the user wants to overwrite recipe params, not just add to them, this lets them do it:
         for key in kwargs:
@@ -1240,9 +1251,9 @@ class Dungeon:
             "max_fails"         : 20000,
         },
 
-        "d&d" : { # Example better suited to Dungeons and Dragons
+        "dnd" : { # Example better suited to Dungeons and Dragons
             "d"                 : 4,
-            "boss_layer_ratio"  : 0,
+            "boss_layer_ratio"  : 0, # Still one on the bottom though
             "density"           : .42,
             "max_backtrack"     : 4,
             "truncate_halls"    : True,
